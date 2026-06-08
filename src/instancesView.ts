@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 
+import { GPU_CATALOG } from "./catalog";
 import { instanceUuidOf } from "./client";
 import { AutoDLInstance } from "./types";
 
@@ -39,6 +40,12 @@ export class InstancesProvider implements vscode.TreeDataProvider<TreeNode> {
 
     try {
       const state = await this.loadState();
+      await vscode.commands.executeCommand("setContext", "autodl.hasToken", state.hasToken);
+      await vscode.commands.executeCommand(
+        "setContext",
+        "autodl.hasInstances",
+        state.instances.length > 0,
+      );
       this.instances = state.instances;
       if (state.instances.length > 0) {
         return state.instances.map((instance) => new InstanceItem(instance));
@@ -62,7 +69,7 @@ export class InstanceItem extends vscode.TreeItem {
   constructor(readonly instance: AutoDLInstance) {
     const uuid = instanceUuidOf(instance) || "unknown";
     const status = instance.status || "unknown";
-    const displayName = instance.name || instance.gpu_alias_name || instance.gpu_name || uuid;
+    const displayName = instance.name || uuid;
     super(displayName, vscode.TreeItemCollapsibleState.Expanded);
 
     this.id = uuid;
@@ -112,13 +119,13 @@ function emptyStateItems(hasToken: boolean): ActionItem[] {
 }
 
 function instanceDetailItems(instance: AutoDLInstance): DetailItem[] {
-  const uuid = instanceUuidOf(instance) || "";
-  const gpuName = instance.gpu_alias_name || instance.gpu_name || instance.gpu_spec_uuid;
+  const gpuName = displayGpu(instance);
+  const gpuSpec = instance.gpu_spec_uuid ? ` (${instance.gpu_spec_uuid})` : "";
   const region = instance.region_name || instance.region_sign;
   return [
-    new DetailItem("UUID", uuid),
-    new DetailItem("GPU", gpuName),
+    new DetailItem("GPU", gpuName ? `${gpuName}${gpuSpec}` : undefined),
     new DetailItem("GPU Count", instance.req_gpu_amount),
+    new DetailItem("CPU", displayCpu(instance)),
     new DetailItem("Region", region),
     new DetailItem("Charge", instance.charge_type),
     new DetailItem("PAYG Price", instance.payg_price),
@@ -129,16 +136,54 @@ function instanceDetailItems(instance: AutoDLInstance): DetailItem[] {
 
 function instanceTooltip(instance: AutoDLInstance): string {
   return [
-    `UUID: ${instanceUuidOf(instance) || ""}`,
     `Name: ${instance.name || ""}`,
     `Status: ${instance.status || ""}`,
-    `GPU: ${instance.gpu_alias_name || instance.gpu_name || instance.gpu_spec_uuid || ""}`,
+    `GPU: ${displayGpu(instance) || ""}`,
+    `GPU Spec: ${instance.gpu_spec_uuid || ""}`,
     `Amount: ${instance.req_gpu_amount ?? ""}`,
+    `CPU: ${displayCpu(instance) || ""}`,
     `Region: ${instance.region_name || instance.region_sign || ""}`,
     `Charge: ${instance.charge_type || ""}`,
     `PAYG Price: ${instance.payg_price ?? ""}`,
     `Started: ${timeValue(instance.started_at)}`,
   ].join("\n");
+}
+
+function displayGpu(instance: AutoDLInstance): string {
+  const explicit =
+    stringField(instance, "gpu_alias_name") ||
+    stringField(instance, "snapshot_gpu_alias_name") ||
+    stringField(instance, "gpu_name") ||
+    stringField(instance, "gpu_model");
+  if (explicit) {
+    return explicit;
+  }
+  const spec = stringField(instance, "gpu_spec_uuid");
+  const known = GPU_CATALOG.find((item) => item.gpuSpecUuid === spec);
+  return known?.label || spec;
+}
+
+function displayCpu(instance: AutoDLInstance): string {
+  const parts = [
+    stringField(instance, "cpu_name") ||
+      stringField(instance, "cpu_model") ||
+      stringField(instance, "cpu_arch") ||
+      stringField(instance, "chip_corp"),
+    stringField(instance, "cpu_num") ||
+      stringField(instance, "cpu_count") ||
+      stringField(instance, "cpu_cores") ||
+      stringField(instance, "req_cpu_num") ||
+      stringField(instance, "vcpu_num"),
+  ].filter(Boolean);
+  return parts.join(" / ");
+}
+
+function stringField(instance: AutoDLInstance, key: string): string {
+  const value = instance[key];
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+  return String(value);
 }
 
 function timeValue(value: unknown): string {

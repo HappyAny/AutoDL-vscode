@@ -31,7 +31,7 @@ Commands:
 - `AutoDL: Clean SSH Config`
 - `AutoDL: Refresh Instances`
 - `AutoDL: Quick Create`
-- `AutoDL: Select Server`
+- `AutoDL: Select Server` - choose GPU model, GPU count, image, CUDA, extra system storage, data centers, name, and start command
 - `AutoDL: Quick Create Low`
 - `AutoDL: Quick Create Mid`
 - `AutoDL: Quick Create High`
@@ -78,7 +78,7 @@ VS Code Remote SSH does not provide a reliable extension API for typing the pass
 
 ## Empty State
 
-If no token is configured, the AutoDL view shows Set Token and Quick Create actions. If a token is configured but there are no instances, it shows create actions. When instances exist, the view shows only the expanded instance list.
+If no token is configured, the AutoDL view shows Set Token and Quick Create actions. If a token is configured but there are no instances, it shows create actions. When instances exist, the view shows only the expanded instance list. Instance rows use readable GPU model names where known, not raw AutoDL spec ids.
 
 ## Development
 

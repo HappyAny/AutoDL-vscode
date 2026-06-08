@@ -14,6 +14,7 @@ export interface AutoDLListData<T> {
 }
 
 export interface AutoDLInstance {
+  [key: string]: unknown;
   uuid?: string;
   instance_uuid?: string;
   name?: string;

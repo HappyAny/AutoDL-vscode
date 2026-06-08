@@ -2,7 +2,7 @@
   "name": "autodl-vscode",
   "displayName": "AutoDL Control",
   "description": "Quickly create, connect, stop, and release AutoDL Pro instances from VS Code.",
-  "version": "0.1.4",
+  "version": "0.1.6",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -60,11 +60,13 @@
       },
       {
         "command": "autodl.quickCreate",
-        "title": "AutoDL: Quick Create"
+        "title": "AutoDL: Quick Create",
+        "icon": "$(add)"
       },
       {
         "command": "autodl.selectServer",
-        "title": "AutoDL: Select Server"
+        "title": "AutoDL: Select Server",
+        "icon": "$(server)"
       },
       {
         "command": "autodl.setSshPublicKey",

@@ -4,6 +4,7 @@ import * as path from "node:path";
 
 import * as vscode from "vscode";
 
+import { GPU_CATALOG, IMAGE_CATALOG, GpuCatalogItem, ImageCatalogItem } from "./catalog";
 import {
   AutoDLApiError,
   AutoDLClient,
@@ -129,13 +130,15 @@ async function selectServer(context: vscode.ExtensionContext): Promise<void> {
       return;
     }
     const settings = getSettings();
-    const selectedProfile = await pickProfile();
-    if (!selectedProfile) {
-      return;
-    }
-    const basePlan = buildQuickCreatePayload(selectedProfile, settings.quickCreate);
     const payload = await promptServerPayload(
-      basePlan.payload,
+      {
+        req_gpu_amount: settings.quickCreate.defaults.gpu_amount,
+        expand_system_disk_by_gb: settings.quickCreate.defaults.system_disk,
+        gpu_spec_uuid: "",
+        image_uuid: settings.quickCreate.defaults.image_uuid,
+        cuda_v_from: settings.quickCreate.defaults.cuda_min,
+        data_center_list: settings.quickCreate.defaults.data_centers,
+      },
       settings.injectSshPublicKeyOnCreate ? settings.sshPublicKey : "",
     );
     if (!payload) {
@@ -152,8 +155,8 @@ async function selectServer(context: vscode.ExtensionContext): Promise<void> {
     await createFromPlan(
       client,
       {
-        ...basePlan,
-        label: `${basePlan.label} custom`,
+        profileName: "custom",
+        label: "Custom Server",
         payload,
       },
       "AutoDL select server",
@@ -376,24 +379,27 @@ async function promptServerPayload(
   defaults: CreateInstancePayload,
   sshPublicKey: string,
 ): Promise<CreateInstancePayload | undefined> {
-  const gpuSpec = await inputValue("GPU spec UUID", defaults.gpu_spec_uuid);
-  if (gpuSpec === undefined) {
+  const gpu = await pickGpuSpec();
+  if (!gpu) {
     return undefined;
   }
-  const imageUuid = await inputValue("Image UUID", defaults.image_uuid);
-  if (imageUuid === undefined) {
-    return undefined;
-  }
-  const cudaMin = await inputNumber("CUDA lower bound", defaults.cuda_v_from);
-  if (cudaMin === undefined) {
-    return undefined;
-  }
+  const gpuSpec = gpu.gpuSpecUuid;
   const gpuAmount = await inputNumber("GPU amount", defaults.req_gpu_amount);
   if (gpuAmount === undefined) {
     return undefined;
   }
+
+  const image = await pickImage(defaults.image_uuid);
+  if (!image) {
+    return undefined;
+  }
+  const imageUuid = image.imageUuid;
+  const cudaMin = await inputNumber("CUDA lower bound", defaults.cuda_v_from || image.cudaMin);
+  if (cudaMin === undefined) {
+    return undefined;
+  }
   const systemDisk = await inputNumber(
-    "System disk expansion GB",
+    "Extra system storage GB",
     defaults.expand_system_disk_by_gb,
   );
   if (systemDisk === undefined) {
@@ -442,6 +448,59 @@ async function promptServerPayload(
     payload.start_command = mergedStartCommand;
   }
   return payload;
+}
+
+async function pickGpuSpec(): Promise<GpuCatalogItem | undefined> {
+  const custom: GpuCatalogItem = {
+    label: "Custom GPU spec UUID",
+    description: "manual",
+    detail: "Enter an AutoDL gpu_spec_uuid manually",
+    gpuSpecUuid: "",
+  };
+  const picked = await vscode.window.showQuickPick([...GPU_CATALOG, custom], {
+    title: "Select GPU type",
+    placeHolder: "Choose a readable GPU model",
+    ignoreFocusOut: true,
+  });
+  if (!picked) {
+    return undefined;
+  }
+  if (picked.gpuSpecUuid) {
+    return picked;
+  }
+  const manual = await inputValue("GPU spec UUID", "");
+  if (!manual) {
+    return undefined;
+  }
+  return {
+    label: manual,
+    description: manual,
+    gpuSpecUuid: manual,
+  };
+}
+
+async function pickImage(defaultImageUuid: string): Promise<ImageCatalogItem | undefined> {
+  const picked = await vscode.window.showQuickPick(IMAGE_CATALOG, {
+    title: "Select image",
+    placeHolder: "Choose a base image or enter a custom image UUID",
+    ignoreFocusOut: true,
+  });
+  if (!picked) {
+    return undefined;
+  }
+  if (picked.imageUuid) {
+    return picked;
+  }
+  const manual = await inputValue("Image UUID", defaultImageUuid);
+  if (!manual) {
+    return undefined;
+  }
+  return {
+    label: manual,
+    description: manual,
+    imageUuid: manual,
+    cudaMin: 130,
+  };
 }
 
 async function setSshPublicKey(): Promise<void> {
