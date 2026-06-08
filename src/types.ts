@@ -33,6 +33,7 @@ export interface AutoDLInstance {
 }
 
 export interface AutoDLSnapshot {
+  [key: string]: unknown;
   region_sign?: string;
   payg_price?: number;
   origin_pay_price?: number;
@@ -66,6 +67,15 @@ export interface AutoDLSnapshot {
   service_6006_port_protocol?: string;
   service_6008_domain?: string;
   service_6008_port_protocol?: string;
+}
+
+export interface AutoDLPrivateImage {
+  [key: string]: unknown;
+  image_uuid?: string;
+  name?: string;
+  status?: string;
+  image_size?: number;
+  create_at?: string;
 }
 
 export interface QuickCreateDefaults {

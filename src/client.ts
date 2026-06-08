@@ -5,6 +5,7 @@ import { URL } from "node:url";
 import {
   AutoDLInstance,
   AutoDLListData,
+  AutoDLPrivateImage,
   AutoDLResponse,
   AutoDLSnapshot,
   CreateInstancePayload,
@@ -54,6 +55,16 @@ export class AutoDLClient {
     pageSize: number,
   ): Promise<AutoDLResponse<AutoDLListData<AutoDLInstance>>> {
     return this.request("POST", "/api/v1/dev/instance/pro/list", {
+      page_index: pageIndex,
+      page_size: pageSize,
+    });
+  }
+
+  async listPrivateImages(
+    pageIndex: number,
+    pageSize: number,
+  ): Promise<AutoDLResponse<AutoDLListData<AutoDLPrivateImage>>> {
+    return this.request("POST", "/api/v1/dev/instance/pro/image/private/list", {
       page_index: pageIndex,
       page_size: pageSize,
     });
@@ -224,6 +235,60 @@ export async function listAllInstances(client: AutoDLClient): Promise<AutoDLInst
   }
 
   return rows;
+}
+
+export async function listAllPrivateImages(client: AutoDLClient): Promise<AutoDLPrivateImage[]> {
+  const pageSize = 20;
+  const first = await client.listPrivateImages(1, pageSize);
+  const data = first.data || {};
+  const rows = [...(data.list || [])];
+  const maxPage = Number(data.max_page || 1);
+
+  for (let page = 2; page <= maxPage; page += 1) {
+    const next = await client.listPrivateImages(page, pageSize);
+    rows.push(...(next.data?.list || []));
+  }
+
+  return rows;
+}
+
+export async function enrichInstancesWithSnapshots(
+  client: AutoDLClient,
+  instances: AutoDLInstance[],
+): Promise<AutoDLInstance[]> {
+  return Promise.all(instances.map((instance) => enrichInstanceWithSnapshot(client, instance)));
+}
+
+async function enrichInstanceWithSnapshot(
+  client: AutoDLClient,
+  instance: AutoDLInstance,
+): Promise<AutoDLInstance> {
+  const uuid = instanceUuidOf(instance);
+  if (!uuid) {
+    return instance;
+  }
+  try {
+    const response = await client.snapshot(uuid);
+    return mergeSnapshotFields(instance, response.data || {});
+  } catch {
+    return instance;
+  }
+}
+
+function mergeSnapshotFields(
+  instance: AutoDLInstance,
+  snapshot: AutoDLSnapshot,
+): AutoDLInstance {
+  return {
+    ...snapshot,
+    ...instance,
+    region_sign: instance.region_sign || snapshot.region_sign,
+    payg_price: instance.payg_price ?? snapshot.payg_price,
+    origin_pay_price: instance.origin_pay_price ?? snapshot.origin_pay_price,
+    snapshot_gpu_alias_name: instance.snapshot_gpu_alias_name || snapshot.snapshot_gpu_alias_name,
+    cpu_arch: instance.cpu_arch || snapshot.cpu_arch,
+    chip_corp: instance.chip_corp || snapshot.chip_corp,
+  };
 }
 
 export async function waitForStatus(

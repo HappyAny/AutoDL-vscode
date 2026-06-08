@@ -30,6 +30,7 @@ Commands:
 - `AutoDL: Set SSH Public Key`
 - `AutoDL: Clean SSH Config`
 - `AutoDL: Refresh Instances`
+- `AutoDL: Refresh GPU and Image Catalogs` - update cached GPU specs, public images, and private images
 - `AutoDL: Quick Create`
 - `AutoDL: Select Server` - choose GPU model, GPU count, image, CUDA, extra system storage, data centers, name, and start command
 - `AutoDL: Quick Create Low`
@@ -39,12 +40,12 @@ Commands:
 
 Instance actions in the tree:
 
-- Connect with Remote SSH
-- Open Jupyter
-- Stop Instance
-- Release Instance
+- Running instances: Connect with Remote SSH, Open Jupyter, Shutdown Instance, Release Instance
+- Shutdown instances: Turn On Instance, Release Instance
 
 When an instance is released through the extension, its managed `Host autodl-<instance>` SSH config block is removed. Use `AutoDL: Clean SSH Config` to remove all stale AutoDL-managed blocks.
+
+The GPU and image catalogs are cached in VS Code global storage. Use the cloud-download icon in the AutoDL view title to refresh them from the AutoDL API docs and your private image list.
 
 ## Defaults
 

@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 
-import { GPU_CATALOG } from "./catalog";
+import { currentGpuCatalog } from "./catalog";
 import { instanceUuidOf } from "./client";
 import { AutoDLInstance } from "./types";
 
@@ -135,19 +135,20 @@ function instanceDetailItems(instance: AutoDLInstance): DetailItem[] {
 }
 
 function instanceTooltip(instance: AutoDLInstance): string {
-  return [
-    `Name: ${instance.name || ""}`,
-    `Status: ${instance.status || ""}`,
-    `GPU: ${displayGpu(instance) || ""}`,
-    `GPU Spec: ${instance.gpu_spec_uuid || ""}`,
-    `Amount: ${instance.req_gpu_amount ?? ""}`,
-    `CPU: ${displayCpu(instance) || ""}`,
-    `Region: ${instance.region_name || instance.region_sign || ""}`,
-    `Charge: ${displayCharge(instance.charge_type)}`,
-    `折扣后按量价格: ${displayPrice(instance.payg_price)}`,
-    `原按量价格: ${displayPrice(instance.origin_pay_price)}`,
-    `Started: ${startedValue(instance.started_at)}`,
-  ].join("\n");
+  return tooltipLines([
+    ["Name", instance.name],
+    ["UUID", instanceUuidOf(instance)],
+    ["Status", instance.status],
+    ["GPU", displayGpu(instance)],
+    ["GPU Spec", instance.gpu_spec_uuid],
+    ["GPU Count", instance.req_gpu_amount],
+    ["CPU", displayCpu(instance)],
+    ["Region", instance.region_name || instance.region_sign],
+    ["Charge", displayCharge(instance.charge_type)],
+    ["折扣后按量价格", displayPrice(instance.payg_price)],
+    ["原按量价格", displayPrice(instance.origin_pay_price)],
+    ["Started", startedValue(instance.started_at)],
+  ]);
 }
 
 function displayGpu(instance: AutoDLInstance): string {
@@ -160,7 +161,7 @@ function displayGpu(instance: AutoDLInstance): string {
     return explicit;
   }
   const spec = stringField(instance, "gpu_spec_uuid");
-  const known = GPU_CATALOG.find((item) => item.gpuSpecUuid === spec);
+  const known = currentGpuCatalog().find((item) => item.gpuSpecUuid === spec);
   return known?.label || spec;
 }
 
@@ -203,6 +204,26 @@ function displayPrice(value: unknown): string {
     return "";
   }
   return String(value);
+}
+
+function tooltipLines(entries: Array<[string, unknown]>): string {
+  return entries
+    .map(([label, value]) => tooltipLine(label, value))
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+}
+
+function tooltipLine(label: string, value: unknown): string | undefined {
+  const text = tooltipValue(value);
+  return text ? `${label}: ${text}` : undefined;
+}
+
+function tooltipValue(value: unknown): string {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  const text = String(value).trim();
+  return text === "-" ? "" : text;
 }
 
 function stringField(instance: AutoDLInstance, key: string): string {

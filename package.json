@@ -2,7 +2,7 @@
   "name": "autodl-vscode",
   "displayName": "AutoDL Control",
   "description": "Quickly create, connect, stop, and release AutoDL Pro instances from VS Code.",
-  "version": "0.1.9",
+  "version": "0.1.13",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -16,6 +16,7 @@
     "onView:autodlInstances",
     "onCommand:autodl.setToken",
     "onCommand:autodl.refresh",
+    "onCommand:autodl.refreshCatalogs",
     "onCommand:autodl.quickCreate",
     "onCommand:autodl.selectServer",
     "onCommand:autodl.setSshPublicKey",
@@ -58,6 +59,11 @@
         "command": "autodl.refresh",
         "title": "AutoDL: Refresh Instances",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "autodl.refreshCatalogs",
+        "title": "AutoDL: Refresh GPU and Image Catalogs",
+        "icon": "$(cloud-download)"
       },
       {
         "command": "autodl.quickCreate",
@@ -127,14 +133,19 @@
           "group": "navigation@1"
         },
         {
-          "command": "autodl.quickCreate",
+          "command": "autodl.refreshCatalogs",
           "when": "view == autodlInstances",
           "group": "navigation@2"
         },
         {
-          "command": "autodl.selectServer",
+          "command": "autodl.quickCreate",
           "when": "view == autodlInstances",
           "group": "navigation@3"
+        },
+        {
+          "command": "autodl.selectServer",
+          "when": "view == autodlInstances",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [

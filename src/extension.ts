@@ -4,10 +4,18 @@ import * as path from "node:path";
 
 import * as vscode from "vscode";
 
-import { GPU_CATALOG, IMAGE_CATALOG, GpuCatalogItem, ImageCatalogItem } from "./catalog";
+import {
+  currentGpuCatalog,
+  currentImageCatalog,
+  GpuCatalogItem,
+  ImageCatalogItem,
+  loadCatalogCache,
+  refreshCatalogCache,
+} from "./catalog";
 import {
   AutoDLApiError,
   AutoDLClient,
+  enrichInstancesWithSnapshots,
   extractInstanceUuid,
   instanceUuidOf,
   isAlreadyStoppedError,
@@ -41,15 +49,17 @@ let output: vscode.OutputChannel;
 let provider: InstancesProvider;
 let autoRefreshTimer: ReturnType<typeof setInterval> | undefined;
 
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
   output = vscode.window.createOutputChannel("AutoDL");
+  await loadCatalogCache(context);
   provider = new InstancesProvider(async () => {
     const token = await getToken(context);
     if (!token) {
       syncAutoRefresh([]);
       return { hasToken: false, instances: [] };
     }
-    const instances = await listAllInstances(new AutoDLClient(token, getSettings().apiBaseUrl));
+    const client = new AutoDLClient(token, getSettings().apiBaseUrl);
+    const instances = await enrichInstancesWithSnapshots(client, await listAllInstances(client));
     syncAutoRefresh(instances);
     return {
       hasToken: true,
@@ -71,6 +81,7 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showInformationMessage("AutoDL token cleared.");
     }),
     vscode.commands.registerCommand("autodl.refresh", () => provider.refresh()),
+    vscode.commands.registerCommand("autodl.refreshCatalogs", () => refreshCatalogs(context)),
     vscode.commands.registerCommand("autodl.quickCreate", () => quickCreate(context)),
     vscode.commands.registerCommand("autodl.selectServer", () => selectServer(context)),
     vscode.commands.registerCommand("autodl.setSshPublicKey", () => setSshPublicKey()),
@@ -132,6 +143,30 @@ async function createClient(context: vscode.ExtensionContext): Promise<AutoDLCli
     return undefined;
   }
   return new AutoDLClient(token, getSettings().apiBaseUrl);
+}
+
+async function refreshCatalogs(context: vscode.ExtensionContext): Promise<void> {
+  await runSafely(async () => {
+    const token = await getToken(context);
+    const client = token ? new AutoDLClient(token, getSettings().apiBaseUrl) : undefined;
+    const result = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "AutoDL refresh GPU and image catalogs",
+        cancellable: false,
+      },
+      () => refreshCatalogCache(context, client),
+    );
+    provider.refresh();
+    const message = `AutoDL catalogs refreshed: ${result.gpuCount} GPU, ${result.imageCount} image(s), ${result.privateImageCount} private image(s).`;
+    if (!result.docsOk || !result.privateImagesOk) {
+      void vscode.window.showWarningMessage(
+        `${message} Some sources failed; cached/default entries were kept.`,
+      );
+      return;
+    }
+    void vscode.window.showInformationMessage(message);
+  });
 }
 
 async function quickCreate(
@@ -522,7 +557,7 @@ async function pickGpuSpec(): Promise<GpuCatalogItem | undefined> {
     detail: "Enter an AutoDL gpu_spec_uuid manually",
     gpuSpecUuid: "",
   };
-  const picked = await vscode.window.showQuickPick([...GPU_CATALOG, custom], {
+  const picked = await vscode.window.showQuickPick([...currentGpuCatalog(), custom], {
     title: "Select GPU type",
     placeHolder: "Choose a readable GPU model",
     ignoreFocusOut: true,
@@ -545,7 +580,7 @@ async function pickGpuSpec(): Promise<GpuCatalogItem | undefined> {
 }
 
 async function pickImage(defaultImageUuid: string): Promise<ImageCatalogItem | undefined> {
-  const picked = await vscode.window.showQuickPick(IMAGE_CATALOG, {
+  const picked = await vscode.window.showQuickPick(currentImageCatalog(), {
     title: "Select image",
     placeHolder: "Choose a base image or enter a custom image UUID",
     ignoreFocusOut: true,
