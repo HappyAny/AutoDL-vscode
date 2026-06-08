@@ -127,9 +127,9 @@ function instanceDetailItems(instance: AutoDLInstance): DetailItem[] {
     new DetailItem("GPU Count", instance.req_gpu_amount),
     new DetailItem("CPU", displayCpu(instance)),
     new DetailItem("Region", region),
-    new DetailItem("Charge", instance.charge_type),
+    new DetailItem("Charge", displayCharge(instance.charge_type)),
     new DetailItem("PAYG Price", instance.payg_price),
-    new DetailItem("Started", timeValue(instance.started_at)),
+    new DetailItem("Started", startedValue(instance.started_at)),
     new DetailItem("Created", timeValue(instance.created_at)),
   ].filter((item) => item.description !== "-");
 }
@@ -143,9 +143,9 @@ function instanceTooltip(instance: AutoDLInstance): string {
     `Amount: ${instance.req_gpu_amount ?? ""}`,
     `CPU: ${displayCpu(instance) || ""}`,
     `Region: ${instance.region_name || instance.region_sign || ""}`,
-    `Charge: ${instance.charge_type || ""}`,
+    `Charge: ${displayCharge(instance.charge_type)}`,
     `PAYG Price: ${instance.payg_price ?? ""}`,
-    `Started: ${timeValue(instance.started_at)}`,
+    `Started: ${startedValue(instance.started_at)}`,
   ].join("\n");
 }
 
@@ -178,6 +178,25 @@ function displayCpu(instance: AutoDLInstance): string {
   return parts.join(" / ");
 }
 
+function displayCharge(value: string | undefined): string {
+  if (!value) {
+    return "";
+  }
+  const normalized = value.toLowerCase();
+  const labels: Record<string, string> = {
+    payg: "按量计费",
+    postpaid: "按量计费",
+    "post-paid": "按量计费",
+    prepaid: "包年包月",
+    "pre-paid": "包年包月",
+    monthly: "包月",
+    hourly: "按小时",
+    free: "免费",
+  };
+  const label = labels[normalized];
+  return label ? `${label} (${value})` : value;
+}
+
 function stringField(instance: AutoDLInstance, key: string): string {
   const value = instance[key];
   if (value === undefined || value === null || value === "") {
@@ -198,11 +217,31 @@ function timeValue(value: unknown): string {
     if (record.Valid && record.Time) {
       return String(record.Time);
     }
+    if (record.Time) {
+      return String(record.Time);
+    }
     if (record.time) {
       return String(record.time);
     }
+    if (record.value) {
+      return String(record.value);
+    }
+    return "";
   }
   return String(value);
+}
+
+function startedValue(value: unknown): string {
+  if (!value) {
+    return "暂未启动";
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (record.Valid === false) {
+      return "暂未启动";
+    }
+  }
+  return timeValue(value) || "暂未启动";
 }
 
 function iconForStatus(status: string): vscode.ThemeIcon {

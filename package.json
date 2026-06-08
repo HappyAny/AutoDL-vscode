@@ -2,7 +2,7 @@
   "name": "autodl-vscode",
   "displayName": "AutoDL Control",
   "description": "Quickly create, connect, stop, and release AutoDL Pro instances from VS Code.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "local",
   "license": "MIT",
   "engines": {
