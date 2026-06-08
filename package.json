@@ -2,7 +2,7 @@
   "name": "autodl-vscode",
   "displayName": "AutoDL Control",
   "description": "Quickly create, connect, stop, and release AutoDL Pro instances from VS Code.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -41,12 +41,6 @@
         }
       ]
     },
-    "viewsWelcome": [
-      {
-        "view": "autodlInstances",
-        "contents": "Set your AutoDL token to manage instances.\n[Set Token](command:autodl.setToken)\n[Quick Create](command:autodl.quickCreate)"
-      }
-    ],
     "commands": [
       {
         "command": "autodl.setToken",
