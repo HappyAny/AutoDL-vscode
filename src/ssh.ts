@@ -56,8 +56,9 @@ export async function connectWithRemoteSsh(
   snapshot: AutoDLSnapshot,
   remotePath: string,
   output: vscode.OutputChannel,
+  identityFile?: string,
 ): Promise<void> {
-  const alias = await writeManagedSshHost(instanceUuid, snapshot);
+  const alias = await writeManagedSshHost(instanceUuid, snapshot, identityFile);
   const remoteUri = vscode.Uri.parse(
     `vscode-remote://ssh-remote+${alias}${encodeRemotePath(remotePath)}`,
   );
@@ -71,6 +72,9 @@ export async function connectWithRemoteSsh(
   if (snapshot.root_password) {
     await vscode.env.clipboard.writeText(snapshot.root_password);
     output.appendLine("Root password copied to clipboard.");
+  }
+  if (identityFile) {
+    output.appendLine(`Using SSH identity file: ${identityFile}`);
   }
 
   if (!vscode.extensions.getExtension("ms-vscode-remote.remote-ssh")) {
@@ -87,6 +91,7 @@ export async function connectWithRemoteSsh(
 export async function writeManagedSshHost(
   instanceUuid: string,
   snapshot: AutoDLSnapshot,
+  identityFile?: string,
 ): Promise<string> {
   const host = sanitizeConfigValue(snapshot.proxy_host, "proxy_host");
   const port = Number(snapshot.ssh_port);
@@ -115,6 +120,10 @@ export async function writeManagedSshHost(
     `  HostName ${host}`,
     "  User root",
     `  Port ${port}`,
+    "  PreferredAuthentications publickey,password",
+    "  PasswordAuthentication yes",
+    ...(identityFile ? [`  IdentityFile ${quoteSshConfigValue(identityFile)}`] : []),
+    ...(identityFile ? ["  IdentitiesOnly yes"] : []),
     `# <<< autodl-vscode ${alias}`,
     "",
   ].join("\n");
@@ -129,8 +138,68 @@ export async function writeManagedSshHost(
   return alias;
 }
 
+export async function removeManagedSshHost(instanceUuid: string): Promise<boolean> {
+  return removeManagedSshBlock(sshAlias(instanceUuid));
+}
+
+export async function removeAllManagedSshHosts(): Promise<number> {
+  const configPath = sshConfigPath();
+  let existing = "";
+  try {
+    existing = await fs.readFile(configPath, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      return 0;
+    }
+    throw error;
+  }
+
+  let removed = 0;
+  const next = existing.replace(
+    /\n?# >>> autodl-vscode [^\n]+[\s\S]*?# <<< autodl-vscode [^\n]+\n?/g,
+    () => {
+      removed += 1;
+      return "\n";
+    },
+  ).trimEnd();
+  if (removed > 0) {
+    await fs.writeFile(configPath, `${next}${next ? "\n" : ""}`, "utf8");
+  }
+  return removed;
+}
+
 function sshAlias(instanceUuid: string): string {
   return `autodl-${instanceUuid.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+}
+
+async function removeManagedSshBlock(alias: string): Promise<boolean> {
+  const configPath = sshConfigPath();
+  let existing = "";
+  try {
+    existing = await fs.readFile(configPath, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+
+  const pattern = new RegExp(
+    `\\n?# >>> autodl-vscode ${escapeRegExp(alias)}[\\s\\S]*?# <<< autodl-vscode ${escapeRegExp(alias)}\\n?`,
+    "m",
+  );
+  if (!pattern.test(existing)) {
+    return false;
+  }
+  const next = existing.replace(pattern, "\n").trimEnd();
+  await fs.writeFile(configPath, `${next}${next ? "\n" : ""}`, "utf8");
+  return true;
+}
+
+function sshConfigPath(): string {
+  return path.join(os.homedir(), ".ssh", "config");
 }
 
 function encodeRemotePath(remotePath: string): string {
@@ -144,6 +213,11 @@ function sanitizeConfigValue(value: string | undefined, fieldName: string): stri
     throw new Error(`Snapshot does not contain a valid ${fieldName}.`);
   }
   return value.trim();
+}
+
+function quoteSshConfigValue(value: string): string {
+  const trimmed = sanitizeConfigValue(value, "identityFile");
+  return trimmed.includes(" ") ? `"${trimmed.replace(/"/g, '\\"')}"` : trimmed;
 }
 
 function escapeRegExp(value: string): string {

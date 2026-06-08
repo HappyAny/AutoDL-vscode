@@ -1,3 +1,7 @@
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+
 import * as vscode from "vscode";
 
 import {
@@ -18,12 +22,19 @@ import {
   ensureToken,
   getSettings,
   getToken,
+  mergeStartCommandWithSshKey,
   profileQuickPickItems,
   promptAndStoreToken,
 } from "./config";
 import { InstancesProvider, InstanceItem } from "./instancesView";
-import { connectWithRemoteSsh, formatSnapshotSummary, jupyterUrl } from "./ssh";
-import { AutoDLInstance } from "./types";
+import {
+  connectWithRemoteSsh,
+  formatSnapshotSummary,
+  jupyterUrl,
+  removeAllManagedSshHosts,
+  removeManagedSshHost,
+} from "./ssh";
+import { AutoDLInstance, CreateInstancePayload, QuickCreateBuildResult } from "./types";
 
 let output: vscode.OutputChannel;
 let provider: InstancesProvider;
@@ -33,9 +44,12 @@ export function activate(context: vscode.ExtensionContext): void {
   provider = new InstancesProvider(async () => {
     const token = await getToken(context);
     if (!token) {
-      return [];
+      return { hasToken: false, instances: [] };
     }
-    return listAllInstances(new AutoDLClient(token, getSettings().apiBaseUrl));
+    return {
+      hasToken: true,
+      instances: await listAllInstances(new AutoDLClient(token, getSettings().apiBaseUrl)),
+    };
   }, reportErrorToOutput);
 
   context.subscriptions.push(output);
@@ -52,6 +66,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("autodl.refresh", () => provider.refresh()),
     vscode.commands.registerCommand("autodl.quickCreate", () => quickCreate(context)),
+    vscode.commands.registerCommand("autodl.selectServer", () => selectServer(context)),
+    vscode.commands.registerCommand("autodl.setSshPublicKey", () => setSshPublicKey()),
+    vscode.commands.registerCommand("autodl.cleanSshConfig", () => cleanSshConfig()),
     vscode.commands.registerCommand("autodl.quickCreateLow", () => quickCreate(context, "low")),
     vscode.commands.registerCommand("autodl.quickCreateMid", () => quickCreate(context, "mid")),
     vscode.commands.registerCommand("autodl.quickCreateHigh", () => quickCreate(context, "high")),
@@ -97,40 +114,90 @@ async function quickCreate(
     if (!selectedProfile) {
       return;
     }
-    const plan = buildQuickCreatePayload(selectedProfile, settings.quickCreate);
-    output.show(true);
-    output.appendLine("");
-    output.appendLine(`Quick create profile: ${plan.profileName}`);
-    output.appendLine(`Create payload: ${JSON.stringify(plan.payload)}`);
-
-    await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: `AutoDL quick create: ${plan.label}`,
-        cancellable: false,
-      },
-      async (progress) => {
-        progress.report({ message: "Creating instance" });
-        const created = await client.createInstance(plan.payload);
-        const instanceUuid = extractInstanceUuid(created.data);
-        if (!instanceUuid) {
-          throw new Error("Create API did not return an instance UUID.");
-        }
-
-        progress.report({ message: `Created ${instanceUuid}; reading snapshot` });
-        const snapshot = await snapshotWithRetry(client, instanceUuid);
-        output.show(true);
-        output.appendLine("");
-        output.appendLine(`Created AutoDL instance with profile ${plan.profileName}.`);
-        output.appendLine(formatSnapshotSummary(instanceUuid, snapshot));
-
-        progress.report({ message: "Opening Remote SSH" });
-        await connectWithRemoteSsh(instanceUuid, snapshot, settings.openRemotePath, output);
-      },
-    );
+    const sshPublicKey = settings.injectSshPublicKeyOnCreate ? settings.sshPublicKey : undefined;
+    const plan = buildQuickCreatePayload(selectedProfile, settings.quickCreate, sshPublicKey);
+    await createFromPlan(client, plan, "AutoDL quick create");
 
     provider.refresh();
   });
+}
+
+async function selectServer(context: vscode.ExtensionContext): Promise<void> {
+  await runSafely(async () => {
+    const client = await createClient(context);
+    if (!client) {
+      return;
+    }
+    const settings = getSettings();
+    const selectedProfile = await pickProfile();
+    if (!selectedProfile) {
+      return;
+    }
+    const basePlan = buildQuickCreatePayload(selectedProfile, settings.quickCreate);
+    const payload = await promptServerPayload(
+      basePlan.payload,
+      settings.injectSshPublicKeyOnCreate ? settings.sshPublicKey : "",
+    );
+    if (!payload) {
+      return;
+    }
+    const confirm = await vscode.window.showWarningMessage(
+      `Create AutoDL server with ${payload.gpu_spec_uuid}, ${payload.req_gpu_amount} GPU, CUDA ${payload.cuda_v_from}?`,
+      { modal: true },
+      "Create",
+    );
+    if (confirm !== "Create") {
+      return;
+    }
+    await createFromPlan(
+      client,
+      {
+        ...basePlan,
+        label: `${basePlan.label} custom`,
+        payload,
+      },
+      "AutoDL select server",
+    );
+    provider.refresh();
+  });
+}
+
+async function createFromPlan(
+  client: AutoDLClient,
+  plan: QuickCreateBuildResult,
+  title: string,
+): Promise<void> {
+  output.show(true);
+  output.appendLine("");
+  output.appendLine(`Create profile: ${plan.profileName}`);
+  output.appendLine(`Create payload: ${JSON.stringify(plan.payload)}`);
+
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `${title}: ${plan.label}`,
+      cancellable: false,
+    },
+    async (progress) => {
+      progress.report({ message: "Creating instance" });
+      const created = await client.createInstance(plan.payload);
+      const instanceUuid = extractInstanceUuid(created.data);
+      if (!instanceUuid) {
+        throw new Error("Create API did not return an instance UUID.");
+      }
+
+      output.appendLine(`Created instance: ${instanceUuid}`);
+      progress.report({ message: "Reading snapshot if ready" });
+      try {
+        const snapshot = await snapshotWithRetry(client, instanceUuid, 2, 2_000);
+        output.appendLine(formatSnapshotSummary(instanceUuid, snapshot));
+      } catch (error) {
+        output.appendLine(
+          `Snapshot is not ready yet. Use SSH Connect after the instance reaches running state. ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    },
+  );
 }
 
 async function connectInstance(
@@ -148,7 +215,14 @@ async function connectInstance(
     }
     const uuid = mustInstanceUuid(instance);
     const snapshot = await snapshotWithRetry(client, uuid, 3);
-    await connectWithRemoteSsh(uuid, snapshot, getSettings().openRemotePath, output);
+    const settings = getSettings();
+    await connectWithRemoteSsh(
+      uuid,
+      snapshot,
+      settings.openRemotePath,
+      output,
+      settings.sshIdentityFile,
+    );
   });
 }
 
@@ -226,6 +300,7 @@ async function releaseInstance(
       await waitForStatus(client, uuid, "stopped", getSettings().waitTimeoutMs, getSettings().waitIntervalMs);
     }
     await client.release(uuid);
+    await removeManagedSshHost(uuid);
     provider.refresh();
     void vscode.window.showInformationMessage(`AutoDL instance released: ${uuid}`);
   });
@@ -275,6 +350,7 @@ async function quickCloseAll(context: vscode.ExtensionContext): Promise<void> {
           }
           output.appendLine(`Releasing ${uuid}`);
           await client.release(uuid);
+          await removeManagedSshHost(uuid);
         }
       },
     );
@@ -294,6 +370,182 @@ async function powerOffIfNeeded(client: AutoDLClient, uuid: string): Promise<voi
     }
     throw error;
   }
+}
+
+async function promptServerPayload(
+  defaults: CreateInstancePayload,
+  sshPublicKey: string,
+): Promise<CreateInstancePayload | undefined> {
+  const gpuSpec = await inputValue("GPU spec UUID", defaults.gpu_spec_uuid);
+  if (gpuSpec === undefined) {
+    return undefined;
+  }
+  const imageUuid = await inputValue("Image UUID", defaults.image_uuid);
+  if (imageUuid === undefined) {
+    return undefined;
+  }
+  const cudaMin = await inputNumber("CUDA lower bound", defaults.cuda_v_from);
+  if (cudaMin === undefined) {
+    return undefined;
+  }
+  const gpuAmount = await inputNumber("GPU amount", defaults.req_gpu_amount);
+  if (gpuAmount === undefined) {
+    return undefined;
+  }
+  const systemDisk = await inputNumber(
+    "System disk expansion GB",
+    defaults.expand_system_disk_by_gb,
+  );
+  if (systemDisk === undefined) {
+    return undefined;
+  }
+  const dataCenters = await inputValue(
+    "Data centers, comma separated; empty means AutoDL chooses",
+    defaults.data_center_list?.join(",") || "",
+    false,
+  );
+  if (dataCenters === undefined) {
+    return undefined;
+  }
+  const name = await inputValue("Instance name, optional", defaults.instance_name || "", false);
+  if (name === undefined) {
+    return undefined;
+  }
+  const startCommand = await inputValue(
+    "Start command, optional",
+    defaults.start_command || "",
+    false,
+  );
+  if (startCommand === undefined) {
+    return undefined;
+  }
+
+  const payload: CreateInstancePayload = {
+    req_gpu_amount: gpuAmount,
+    expand_system_disk_by_gb: systemDisk,
+    gpu_spec_uuid: gpuSpec,
+    image_uuid: imageUuid,
+    cuda_v_from: cudaMin,
+  };
+  const centers = dataCenters
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (centers.length) {
+    payload.data_center_list = centers;
+  }
+  if (name.trim()) {
+    payload.instance_name = name.trim();
+  }
+  const mergedStartCommand = mergeStartCommandWithSshKey(startCommand, sshPublicKey);
+  if (mergedStartCommand) {
+    payload.start_command = mergedStartCommand;
+  }
+  return payload;
+}
+
+async function setSshPublicKey(): Promise<void> {
+  await runSafely(async () => {
+    const detected = await readDefaultPublicKey();
+    const key = await vscode.window.showInputBox({
+      title: "AutoDL SSH Public Key",
+      prompt: "Public key injected during new instance creation. Existing instances still use password unless the key is already installed.",
+      value: getSettings().sshPublicKey || detected.publicKey,
+      ignoreFocusOut: true,
+      validateInput: (value) => {
+        const trimmed = value.trim();
+        if (!trimmed) {
+          return "Public key cannot be empty.";
+        }
+        if (!/^ssh-(ed25519|rsa|ecdsa)\s+/.test(trimmed)) {
+          return "Expected an OpenSSH public key, for example ssh-ed25519 AAAA...";
+        }
+        return undefined;
+      },
+    });
+    if (!key) {
+      return;
+    }
+    await vscode.workspace
+      .getConfiguration("autodl")
+      .update("sshPublicKey", key.trim(), vscode.ConfigurationTarget.Global);
+    if (detected.identityFile) {
+      await vscode.workspace
+        .getConfiguration("autodl")
+        .update("sshIdentityFile", detected.identityFile, vscode.ConfigurationTarget.Global);
+    }
+    void vscode.window.showInformationMessage("AutoDL SSH public key saved.");
+  });
+}
+
+async function cleanSshConfig(): Promise<void> {
+  await runSafely(async () => {
+    const choice = await vscode.window.showWarningMessage(
+      "Remove all SSH config blocks managed by AutoDL Control?",
+      { modal: true },
+      "Clean",
+    );
+    if (choice !== "Clean") {
+      return;
+    }
+    const removed = await removeAllManagedSshHosts();
+    void vscode.window.showInformationMessage(`Removed ${removed} AutoDL SSH config block(s).`);
+  });
+}
+
+async function readDefaultPublicKey(): Promise<{ publicKey: string; identityFile: string }> {
+  const sshDir = path.join(os.homedir(), ".ssh");
+  for (const name of ["id_ed25519.pub", "id_rsa.pub", "id_ecdsa.pub"]) {
+    try {
+      const value = await fs.readFile(path.join(sshDir, name), "utf8");
+      if (value.trim()) {
+        return {
+          publicKey: value.trim(),
+          identityFile: path.join(sshDir, name.replace(/\.pub$/, "")),
+        };
+      }
+    } catch {
+      // Try the next conventional key path.
+    }
+  }
+  return { publicKey: "", identityFile: "" };
+}
+
+async function inputValue(
+  title: string,
+  value: string,
+  required = true,
+): Promise<string | undefined> {
+  return vscode.window.showInputBox({
+    title,
+    value,
+    ignoreFocusOut: true,
+    validateInput: (input) => {
+      if (required && !input.trim()) {
+        return `${title} is required.`;
+      }
+      return undefined;
+    },
+  });
+}
+
+async function inputNumber(title: string, value: number): Promise<number | undefined> {
+  const input = await vscode.window.showInputBox({
+    title,
+    value: String(value),
+    ignoreFocusOut: true,
+    validateInput: (raw) => {
+      const parsed = Number(raw);
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        return `${title} must be a non-negative integer.`;
+      }
+      return undefined;
+    },
+  });
+  if (input === undefined) {
+    return undefined;
+  }
+  return Number(input);
 }
 
 async function pickProfile(): Promise<string | undefined> {

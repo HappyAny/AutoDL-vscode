@@ -2,7 +2,7 @@
   "name": "autodl-vscode",
   "displayName": "AutoDL Control",
   "description": "Quickly create, connect, stop, and release AutoDL Pro instances from VS Code.",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -17,6 +17,9 @@
     "onCommand:autodl.setToken",
     "onCommand:autodl.refresh",
     "onCommand:autodl.quickCreate",
+    "onCommand:autodl.selectServer",
+    "onCommand:autodl.setSshPublicKey",
+    "onCommand:autodl.cleanSshConfig",
     "onCommand:autodl.quickCreateLow",
     "onCommand:autodl.quickCreateMid",
     "onCommand:autodl.quickCreateHigh",
@@ -58,6 +61,18 @@
       {
         "command": "autodl.quickCreate",
         "title": "AutoDL: Quick Create"
+      },
+      {
+        "command": "autodl.selectServer",
+        "title": "AutoDL: Select Server"
+      },
+      {
+        "command": "autodl.setSshPublicKey",
+        "title": "AutoDL: Set SSH Public Key"
+      },
+      {
+        "command": "autodl.cleanSshConfig",
+        "title": "AutoDL: Clean SSH Config"
       },
       {
         "command": "autodl.quickCreateLow",
@@ -107,6 +122,11 @@
           "command": "autodl.quickCreate",
           "when": "view == autodlInstances",
           "group": "navigation@2"
+        },
+        {
+          "command": "autodl.selectServer",
+          "when": "view == autodlInstances",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -136,6 +156,12 @@
           "command": "autodl.clearToken"
         },
         {
+          "command": "autodl.setSshPublicKey"
+        },
+        {
+          "command": "autodl.cleanSshConfig"
+        },
+        {
           "command": "autodl.quickCloseAll"
         }
       ]
@@ -152,6 +178,21 @@
           "type": "string",
           "default": "/root",
           "description": "Remote folder opened after connecting through Remote SSH."
+        },
+        "autodl.sshPublicKey": {
+          "type": "string",
+          "default": "",
+          "description": "Public key injected into new instances during create. This lets Remote SSH connect without password once the start command has run."
+        },
+        "autodl.sshIdentityFile": {
+          "type": "string",
+          "default": "",
+          "description": "Private key path written into managed SSH config for AutoDL hosts. Leave empty to let OpenSSH use default identities."
+        },
+        "autodl.injectSshPublicKeyOnCreate": {
+          "type": "boolean",
+          "default": true,
+          "description": "Append autodl.sshPublicKey to /root/.ssh/authorized_keys during new instance creation."
         },
         "autodl.waitTimeoutSeconds": {
           "type": "number",

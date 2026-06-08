@@ -27,8 +27,11 @@ Open the AutoDL icon in the VS Code Activity Bar.
 Commands:
 
 - `AutoDL: Set Token`
+- `AutoDL: Set SSH Public Key`
+- `AutoDL: Clean SSH Config`
 - `AutoDL: Refresh Instances`
 - `AutoDL: Quick Create`
+- `AutoDL: Select Server`
 - `AutoDL: Quick Create Low`
 - `AutoDL: Quick Create Mid`
 - `AutoDL: Quick Create High`
@@ -40,6 +43,8 @@ Instance actions in the tree:
 - Open Jupyter
 - Stop Instance
 - Release Instance
+
+When an instance is released through the extension, its managed `Host autodl-<instance>` SSH config block is removed. Use `AutoDL: Clean SSH Config` to remove all stale AutoDL-managed blocks.
 
 ## Defaults
 
@@ -58,7 +63,9 @@ Token is stored in VS Code SecretStorage. `AUTODL_TOKEN` is supported as a fallb
 
 ## Remote SSH Behavior
 
-After quick-create or Connect, the extension:
+Quick Create and Select Server only create the instance and refresh the list. They do not automatically connect, because the instance may not be fully ready yet.
+
+When Connect is clicked, the extension:
 
 1. Calls AutoDL snapshot for the instance.
 2. Writes a managed host entry to `~/.ssh/config`.
@@ -66,6 +73,12 @@ After quick-create or Connect, the extension:
 4. Opens `vscode-remote://ssh-remote+autodl-<instance>/root`.
 
 The VS Code Remote - SSH extension should be installed for the remote window to open cleanly.
+
+VS Code Remote SSH does not provide a reliable extension API for typing the password into its prompt. For hands-free login, run `AutoDL: Set SSH Public Key` before creating new instances. The extension injects that public key into `/root/.ssh/authorized_keys` through the create start command and writes the matching private key path into the managed SSH config.
+
+## Empty State
+
+If no token is configured, the AutoDL view shows Set Token and Quick Create actions. If a token is configured but there are no instances, it shows create actions. When instances exist, the view shows only the expanded instance list.
 
 ## Development
 

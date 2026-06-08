@@ -18,12 +18,17 @@ export interface AutoDLInstance {
   instance_uuid?: string;
   name?: string;
   status?: string;
+  gpu_name?: string;
+  gpu_alias_name?: string;
   gpu_spec_uuid?: string;
   req_gpu_amount?: number;
   region_name?: string;
   region_sign?: string;
   charge_type?: string;
+  payg_price?: number;
+  origin_pay_price?: number;
   started_at?: unknown;
+  created_at?: unknown;
 }
 
 export interface AutoDLSnapshot {

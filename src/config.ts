@@ -38,6 +38,9 @@ export interface ExtensionSettings {
   openRemotePath: string;
   waitTimeoutMs: number;
   waitIntervalMs: number;
+  sshPublicKey: string;
+  sshIdentityFile: string;
+  injectSshPublicKeyOnCreate: boolean;
   quickCreate: QuickCreateConfig;
 }
 
@@ -48,6 +51,9 @@ export function getSettings(): ExtensionSettings {
     openRemotePath: config.get<string>("openRemotePath", "/root"),
     waitTimeoutMs: config.get<number>("waitTimeoutSeconds", 900) * 1000,
     waitIntervalMs: config.get<number>("waitIntervalSeconds", 5) * 1000,
+    sshPublicKey: config.get<string>("sshPublicKey", "").trim(),
+    sshIdentityFile: config.get<string>("sshIdentityFile", "").trim(),
+    injectSshPublicKeyOnCreate: config.get<boolean>("injectSshPublicKeyOnCreate", true),
     quickCreate: normalizeQuickCreateConfig(
       config.get<Partial<QuickCreateConfig>>("quickCreate", DEFAULT_QUICK_CREATE),
     ),
@@ -96,6 +102,7 @@ export async function clearToken(context: vscode.ExtensionContext): Promise<void
 export function buildQuickCreatePayload(
   profileName: string,
   quickCreate: QuickCreateConfig,
+  sshPublicKey?: string,
 ): QuickCreateBuildResult {
   const profile = quickCreate.profiles[profileName];
   if (!profile) {
@@ -124,8 +131,9 @@ export function buildQuickCreatePayload(
     payload.instance_name = profile.name.trim();
   }
   const startCommand = profile.start_command ?? defaults.start_command;
-  if (startCommand?.trim()) {
-    payload.start_command = startCommand.trim();
+  const finalStartCommand = mergeStartCommandWithSshKey(startCommand, sshPublicKey);
+  if (finalStartCommand) {
+    payload.start_command = finalStartCommand;
   }
 
   return {
@@ -133,6 +141,34 @@ export function buildQuickCreatePayload(
     label: profile.label || profileName,
     payload,
   };
+}
+
+export function mergeStartCommandWithSshKey(
+  startCommand: string | null | undefined,
+  sshPublicKey?: string,
+): string | undefined {
+  const trimmedStartCommand = startCommand?.trim();
+  const trimmedKey = sshPublicKey?.trim();
+  if (!trimmedKey) {
+    return trimmedStartCommand || undefined;
+  }
+
+  const injectKeyCommand = [
+    "mkdir -p /root/.ssh",
+    "chmod 700 /root/.ssh",
+    "touch /root/.ssh/authorized_keys",
+    `(grep -qxF ${shellQuote(trimmedKey)} /root/.ssh/authorized_keys || echo ${shellQuote(trimmedKey)} >> /root/.ssh/authorized_keys)`,
+    "chmod 600 /root/.ssh/authorized_keys",
+  ].join(" && ");
+
+  if (!trimmedStartCommand) {
+    return injectKeyCommand;
+  }
+  return `${injectKeyCommand} && (${trimmedStartCommand})`;
+}
+
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\"'\"'")}'`;
 }
 
 export function profileQuickPickItems(quickCreate: QuickCreateConfig): vscode.QuickPickItem[] {
