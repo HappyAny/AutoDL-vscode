@@ -41,7 +41,16 @@ export interface ExtensionSettings {
   sshPublicKey: string;
   sshIdentityFile: string;
   injectSshPublicKeyOnCreate: boolean;
+  sync: FolderSyncSettings;
   quickCreate: QuickCreateConfig;
+}
+
+export interface FolderSyncSettings {
+  enabled: boolean;
+  localFolder: string;
+  remoteFolder: string;
+  intervalMs: number;
+  excludeNames: string[];
 }
 
 export function getSettings(): ExtensionSettings {
@@ -54,6 +63,21 @@ export function getSettings(): ExtensionSettings {
     sshPublicKey: config.get<string>("sshPublicKey", "").trim(),
     sshIdentityFile: config.get<string>("sshIdentityFile", "").trim(),
     injectSshPublicKeyOnCreate: config.get<boolean>("injectSshPublicKeyOnCreate", true),
+    sync: {
+      enabled: config.get<boolean>("sync.enabled", false),
+      localFolder: config.get<string>("sync.localFolder", "").trim(),
+      remoteFolder: config.get<string>("sync.remoteFolder", "/root/autodl-sync").trim(),
+      intervalMs: config.get<number>("sync.intervalSeconds", 15) * 1000,
+      excludeNames: config.get<string[]>("sync.excludeNames", [
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".mypy_cache",
+        ".pytest_cache",
+      ]),
+    },
     quickCreate: normalizeQuickCreateConfig(
       config.get<Partial<QuickCreateConfig>>("quickCreate", DEFAULT_QUICK_CREATE),
     ),

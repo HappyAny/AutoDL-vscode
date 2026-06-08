@@ -31,6 +31,9 @@ Commands:
 - `AutoDL: Clean SSH Config`
 - `AutoDL: Refresh Instances`
 - `AutoDL: Refresh GPU and Image Catalogs` - update cached GPU specs, public images, and private images
+- `AutoDL: Set Sync Folders`
+- `AutoDL: Start Folder Sync`
+- `AutoDL: Stop Folder Sync`
 - `AutoDL: Quick Create`
 - `AutoDL: Select Server` - choose GPU model, GPU count, image, CUDA, extra system storage, data centers, name, and start command
 - `AutoDL: Quick Create Low`
@@ -46,6 +49,25 @@ Instance actions in the tree:
 When an instance is released through the extension, its managed `Host autodl-<instance>` SSH config block is removed. Use `AutoDL: Clean SSH Config` to remove all stale AutoDL-managed blocks.
 
 The GPU and image catalogs are cached in VS Code global storage. Use the cloud-download icon in the AutoDL view title to refresh them from the AutoDL API docs and your private image list.
+
+## Folder Sync
+
+Use `AutoDL: Set Sync Folders` to choose a local folder and a remote folder. After that, `AutoDL: Connect with Remote SSH` automatically starts a background sync session for the instance.
+
+Sync behavior is conservative:
+
+- New files on either side are copied to the other side.
+- A file changed on only one side overwrites the unchanged copy on the other side.
+- If both sides changed the same file, the extension writes a `*.local-conflict-*` or `*.remote-conflict-*` copy instead of overwriting either file.
+- Deletes are not synced.
+- Default ignored names include `.git`, `node_modules`, virtualenv folders, and Python cache folders.
+
+Folder sync uses local `ssh` and `scp` with `BatchMode=yes`, so it requires key-based SSH login. Run `AutoDL: Set SSH Public Key` before creating new instances for hands-free sync.
+
+Progress is visible in two places:
+
+- The VS Code status bar shows scanning and current transfer progress. Click it to stop active sync sessions.
+- The AutoDL output panel logs each uploaded, downloaded, or conflict-copied file plus the per-cycle summary.
 
 ## Defaults
 

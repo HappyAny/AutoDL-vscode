@@ -2,7 +2,7 @@
   "name": "autodl-vscode",
   "displayName": "AutoDL Control",
   "description": "Quickly create, connect, stop, and release AutoDL Pro instances from VS Code.",
-  "version": "0.1.14",
+  "version": "0.1.16",
   "publisher": "local",
   "license": "MIT",
   "icon": "media/autodl-icon.png",
@@ -21,6 +21,9 @@
     "onCommand:autodl.quickCreate",
     "onCommand:autodl.selectServer",
     "onCommand:autodl.setSshPublicKey",
+    "onCommand:autodl.setSyncFolders",
+    "onCommand:autodl.startFolderSync",
+    "onCommand:autodl.stopFolderSync",
     "onCommand:autodl.cleanSshConfig",
     "onCommand:autodl.quickCreateLow",
     "onCommand:autodl.quickCreateMid",
@@ -79,6 +82,19 @@
       {
         "command": "autodl.setSshPublicKey",
         "title": "AutoDL: Set SSH Public Key"
+      },
+      {
+        "command": "autodl.setSyncFolders",
+        "title": "AutoDL: Set Sync Folders"
+      },
+      {
+        "command": "autodl.startFolderSync",
+        "title": "AutoDL: Start Folder Sync",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "autodl.stopFolderSync",
+        "title": "AutoDL: Stop Folder Sync"
       },
       {
         "command": "autodl.cleanSshConfig",
@@ -174,6 +190,11 @@
           "command": "autodl.release",
           "when": "view == autodlInstances && (viewItem == autodlInstanceRunning || viewItem == autodlInstanceShutdown || viewItem == autodlInstanceOther)",
           "group": "actions@2"
+        },
+        {
+          "command": "autodl.startFolderSync",
+          "when": "view == autodlInstances && viewItem == autodlInstanceRunning",
+          "group": "actions@3"
         }
       ],
       "commandPalette": [
@@ -182,6 +203,15 @@
         },
         {
           "command": "autodl.setSshPublicKey"
+        },
+        {
+          "command": "autodl.setSyncFolders"
+        },
+        {
+          "command": "autodl.startFolderSync"
+        },
+        {
+          "command": "autodl.stopFolderSync"
         },
         {
           "command": "autodl.cleanSshConfig"
@@ -218,6 +248,42 @@
           "type": "boolean",
           "default": true,
           "description": "Append autodl.sshPublicKey to /root/.ssh/authorized_keys during new instance creation."
+        },
+        "autodl.sync.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Start folder sync automatically after opening an AutoDL instance through Remote SSH."
+        },
+        "autodl.sync.localFolder": {
+          "type": "string",
+          "default": "",
+          "description": "Local folder used for AutoDL bidirectional sync."
+        },
+        "autodl.sync.remoteFolder": {
+          "type": "string",
+          "default": "/root/autodl-sync",
+          "description": "Remote folder used for AutoDL bidirectional sync."
+        },
+        "autodl.sync.intervalSeconds": {
+          "type": "number",
+          "default": 15,
+          "description": "Polling interval for AutoDL folder sync."
+        },
+        "autodl.sync.excludeNames": {
+          "type": "array",
+          "default": [
+            ".git",
+            "node_modules",
+            "__pycache__",
+            ".venv",
+            "venv",
+            ".mypy_cache",
+            ".pytest_cache"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Directory or file names ignored by AutoDL folder sync."
         },
         "autodl.waitTimeoutSeconds": {
           "type": "number",

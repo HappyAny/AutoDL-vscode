@@ -57,7 +57,7 @@ export async function connectWithRemoteSsh(
   remotePath: string,
   output: vscode.OutputChannel,
   identityFile?: string,
-): Promise<void> {
+): Promise<string> {
   const alias = await writeManagedSshHost(instanceUuid, snapshot, identityFile);
   const remoteUri = vscode.Uri.parse(
     `vscode-remote://ssh-remote+${alias}${encodeRemotePath(remotePath)}`,
@@ -86,6 +86,7 @@ export async function connectWithRemoteSsh(
   await vscode.commands.executeCommand("vscode.openFolder", remoteUri, {
     forceNewWindow: true,
   });
+  return alias;
 }
 
 export async function writeManagedSshHost(
@@ -169,7 +170,7 @@ export async function removeAllManagedSshHosts(): Promise<number> {
   return removed;
 }
 
-function sshAlias(instanceUuid: string): string {
+export function sshAlias(instanceUuid: string): string {
   return `autodl-${instanceUuid.replace(/[^A-Za-z0-9_-]/g, "-")}`;
 }
 

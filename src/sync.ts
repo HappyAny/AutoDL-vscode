@@ -1,0 +1,483 @@
+import * as cp from "node:child_process";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+
+import * as vscode from "vscode";
+
+export interface FolderSyncConfig {
+  enabled: boolean;
+  localFolder: string;
+  remoteFolder: string;
+  intervalMs: number;
+  excludeNames: string[];
+}
+
+export interface FolderSyncStartOptions {
+  alias: string;
+  localFolder: string;
+  remoteFolder: string;
+  intervalMs: number;
+  excludeNames: string[];
+  output: vscode.OutputChannel;
+}
+
+interface FileRecord {
+  mtimeMs: number;
+  size: number;
+}
+
+interface SyncedRecord {
+  local?: FileRecord;
+  remote?: FileRecord;
+}
+
+interface SyncCounters {
+  uploads: number;
+  downloads: number;
+  conflicts: number;
+}
+
+interface SyncSession {
+  alias: string;
+  localFolder: string;
+  remoteFolder: string;
+  intervalMs: number;
+  excludeNames: Set<string>;
+  output: vscode.OutputChannel;
+  previous: Map<string, SyncedRecord>;
+  running: boolean;
+  disposed: boolean;
+  timer: ReturnType<typeof setInterval>;
+}
+
+const sessions = new Map<string, SyncSession>();
+let statusBarItem: vscode.StatusBarItem | undefined;
+
+export async function startFolderSync(options: FolderSyncStartOptions): Promise<void> {
+  const localFolder = expandHome(options.localFolder);
+  await ensureExistingDirectory(localFolder);
+
+  stopFolderSync(options.alias);
+  const session: SyncSession = {
+    alias: options.alias,
+    localFolder,
+    remoteFolder: normalizeRemoteFolder(options.remoteFolder),
+    intervalMs: Math.max(options.intervalMs, 3_000),
+    excludeNames: new Set(options.excludeNames.filter(Boolean)),
+    output: options.output,
+    previous: new Map(),
+    running: false,
+    disposed: false,
+    timer: setInterval(() => {
+      void runSyncCycle(session);
+    }, Math.max(options.intervalMs, 3_000)),
+  };
+
+  sessions.set(options.alias, session);
+  options.output.show(true);
+  options.output.appendLine("");
+  options.output.appendLine(
+    `Folder sync started: ${localFolder} <-> ${options.alias}:${session.remoteFolder}`,
+  );
+  updateIdleStatus();
+  void runSyncCycle(session);
+}
+
+export function stopFolderSync(alias: string): boolean {
+  const session = sessions.get(alias);
+  if (!session) {
+    return false;
+  }
+  session.disposed = true;
+  clearInterval(session.timer);
+  sessions.delete(alias);
+  session.output.appendLine(`Folder sync stopped: ${alias}`);
+  updateIdleStatus();
+  return true;
+}
+
+export function stopAllFolderSync(): number {
+  let stopped = 0;
+  for (const alias of [...sessions.keys()]) {
+    if (stopFolderSync(alias)) {
+      stopped += 1;
+    }
+  }
+  return stopped;
+}
+
+export function activeFolderSyncAliases(): string[] {
+  return [...sessions.keys()];
+}
+
+async function runSyncCycle(session: SyncSession): Promise<void> {
+  if (session.running || session.disposed) {
+    return;
+  }
+  session.running = true;
+  try {
+    updateStatus(`$(sync~spin) AutoDL Sync: scanning ${session.alias}`);
+    await runSsh(session.alias, `mkdir -p ${quoteRemotePath(session.remoteFolder)}`, 30_000);
+    const local = await scanLocal(session.localFolder, session.excludeNames);
+    const remote = await scanRemote(session.alias, session.remoteFolder, session.excludeNames);
+    const counters = await reconcile(session, local, remote);
+    const finalLocal = await scanLocal(session.localFolder, session.excludeNames);
+    const finalRemote = await scanRemote(session.alias, session.remoteFolder, session.excludeNames);
+    session.previous = buildSyncedState(finalLocal, finalRemote);
+    if (counters.uploads || counters.downloads || counters.conflicts) {
+      session.output.appendLine(
+        `Folder sync ${session.alias}: upload=${counters.uploads}, download=${counters.downloads}, conflict=${counters.conflicts}`,
+      );
+    }
+  } catch (error) {
+    session.output.show(true);
+    session.output.appendLine(
+      `Folder sync error (${session.alias}): ${error instanceof Error ? error.message : String(error)}`,
+    );
+  } finally {
+    session.running = false;
+    updateIdleStatus();
+  }
+}
+
+async function reconcile(
+  session: SyncSession,
+  local: Map<string, FileRecord>,
+  remote: Map<string, FileRecord>,
+): Promise<SyncCounters> {
+  const counters: SyncCounters = { uploads: 0, downloads: 0, conflicts: 0 };
+  const allRelativePaths = new Set([...local.keys(), ...remote.keys()]);
+  const total = allRelativePaths.size;
+  let checked = 0;
+
+  for (const relativePath of [...allRelativePaths].sort()) {
+    checked += 1;
+    updateStatus(
+      `$(sync~spin) AutoDL Sync: ${checked}/${total}`,
+      `${session.alias}\nChecking ${relativePath}`,
+    );
+    const localRecord = local.get(relativePath);
+    const remoteRecord = remote.get(relativePath);
+    const previous = session.previous.get(relativePath);
+
+    if (localRecord && !remoteRecord) {
+      await uploadFile(session, relativePath, relativePath);
+      counters.uploads += 1;
+      continue;
+    }
+
+    if (!localRecord && remoteRecord) {
+      await downloadFile(session, relativePath, relativePath);
+      counters.downloads += 1;
+      continue;
+    }
+
+    if (!localRecord || !remoteRecord || sameRecord(localRecord, remoteRecord)) {
+      continue;
+    }
+
+    if (!previous) {
+      const conflictPath = conflictRelativePath(
+        relativePath,
+        localRecord.mtimeMs >= remoteRecord.mtimeMs ? "local" : "remote",
+      );
+      if (localRecord.mtimeMs >= remoteRecord.mtimeMs) {
+        await uploadFile(session, relativePath, conflictPath);
+      } else {
+        await downloadFile(session, relativePath, conflictPath);
+      }
+      counters.conflicts += 1;
+      continue;
+    }
+
+    const localChanged = !previous.local || !sameRecord(localRecord, previous.local);
+    const remoteChanged = !previous.remote || !sameRecord(remoteRecord, previous.remote);
+
+    if (localChanged && !remoteChanged) {
+      await uploadFile(session, relativePath, relativePath);
+      counters.uploads += 1;
+      continue;
+    }
+
+    if (!localChanged && remoteChanged) {
+      await downloadFile(session, relativePath, relativePath);
+      counters.downloads += 1;
+      continue;
+    }
+
+    if (localChanged && remoteChanged) {
+      await uploadFile(session, relativePath, conflictRelativePath(relativePath, "local"));
+      await downloadFile(session, relativePath, conflictRelativePath(relativePath, "remote"));
+      counters.conflicts += 1;
+    }
+  }
+
+  return counters;
+}
+
+async function uploadFile(
+  session: SyncSession,
+  sourceRelativePath: string,
+  targetRelativePath: string,
+): Promise<void> {
+  updateStatus(
+    `$(cloud-upload) AutoDL Sync: ${shortPath(sourceRelativePath)}`,
+    `${session.alias}\nUpload ${sourceRelativePath}`,
+  );
+  session.output.appendLine(
+    `Folder sync ${session.alias}: upload ${sourceRelativePath} -> ${targetRelativePath}`,
+  );
+  const localPath = localFilePath(session.localFolder, sourceRelativePath);
+  const remotePath = remoteFilePath(session.remoteFolder, targetRelativePath);
+  await runSsh(
+    session.alias,
+    `mkdir -p ${quoteRemotePath(posixDirname(remotePath))}`,
+    30_000,
+  );
+  await runCommand(
+    "scp",
+    ["-q", "-o", "BatchMode=yes", localPath, `${session.alias}:${quoteRemotePath(remotePath)}`],
+    10 * 60_000,
+  );
+}
+
+async function downloadFile(
+  session: SyncSession,
+  sourceRelativePath: string,
+  targetRelativePath: string,
+): Promise<void> {
+  updateStatus(
+    `$(cloud-download) AutoDL Sync: ${shortPath(sourceRelativePath)}`,
+    `${session.alias}\nDownload ${sourceRelativePath}`,
+  );
+  session.output.appendLine(
+    `Folder sync ${session.alias}: download ${sourceRelativePath} -> ${targetRelativePath}`,
+  );
+  const localPath = localFilePath(session.localFolder, targetRelativePath);
+  await fs.mkdir(path.dirname(localPath), { recursive: true });
+  const remotePath = remoteFilePath(session.remoteFolder, sourceRelativePath);
+  await runCommand(
+    "scp",
+    ["-q", "-o", "BatchMode=yes", `${session.alias}:${quoteRemotePath(remotePath)}`, localPath],
+    10 * 60_000,
+  );
+}
+
+async function scanLocal(
+  localFolder: string,
+  excludeNames: Set<string>,
+): Promise<Map<string, FileRecord>> {
+  const files = new Map<string, FileRecord>();
+  await scanLocalDirectory(localFolder, "", excludeNames, files);
+  return files;
+}
+
+async function scanLocalDirectory(
+  root: string,
+  relativeDirectory: string,
+  excludeNames: Set<string>,
+  files: Map<string, FileRecord>,
+): Promise<void> {
+  const directory = relativeDirectory ? path.join(root, relativeDirectory) : root;
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    if (excludeNames.has(entry.name)) {
+      continue;
+    }
+    const relativePath = relativeDirectory
+      ? path.posix.join(toPosixPath(relativeDirectory), entry.name)
+      : entry.name;
+    const absolutePath = path.join(root, ...relativePath.split("/"));
+    if (entry.isDirectory()) {
+      await scanLocalDirectory(root, relativePath, excludeNames, files);
+      continue;
+    }
+    if (!entry.isFile()) {
+      continue;
+    }
+    const stat = await fs.stat(absolutePath);
+    files.set(relativePath, {
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+    });
+  }
+}
+
+async function scanRemote(
+  alias: string,
+  remoteFolder: string,
+  excludeNames: Set<string>,
+): Promise<Map<string, FileRecord>> {
+  const prune = remoteFindPrune(excludeNames);
+  const command = `cd ${quoteRemotePath(remoteFolder)} && find . ${prune} -type f -printf '%P\t%T@\t%s\n'`;
+  const { stdout } = await runSsh(alias, command, 60_000);
+  const files = new Map<string, FileRecord>();
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+    const [relativePath, rawMtime, rawSize] = line.split("\t");
+    if (!relativePath || isExcludedPath(relativePath, excludeNames)) {
+      continue;
+    }
+    files.set(relativePath, {
+      mtimeMs: Number(rawMtime) * 1000,
+      size: Number(rawSize),
+    });
+  }
+  return files;
+}
+
+function remoteFindPrune(excludeNames: Set<string>): string {
+  const names = [...excludeNames];
+  if (!names.length) {
+    return "";
+  }
+  const clauses = names.map((name) => `-name ${quoteRemotePath(name)}`).join(" -o ");
+  return `\\( -type d \\( ${clauses} \\) -prune \\) -o`;
+}
+
+function buildSyncedState(
+  local: Map<string, FileRecord>,
+  remote: Map<string, FileRecord>,
+): Map<string, SyncedRecord> {
+  const state = new Map<string, SyncedRecord>();
+  for (const relativePath of new Set([...local.keys(), ...remote.keys()])) {
+    state.set(relativePath, {
+      local: local.get(relativePath),
+      remote: remote.get(relativePath),
+    });
+  }
+  return state;
+}
+
+async function runSsh(
+  alias: string,
+  command: string,
+  timeoutMs: number,
+): Promise<{ stdout: string; stderr: string }> {
+  return runCommand("ssh", ["-o", "BatchMode=yes", alias, command], timeoutMs);
+}
+
+function runCommand(
+  command: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    cp.execFile(
+      command,
+      args,
+      {
+        timeout: timeoutMs,
+        maxBuffer: 20 * 1024 * 1024,
+        windowsHide: true,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(`${command} failed: ${stderr || error.message}`));
+          return;
+        }
+        resolve({ stdout, stderr });
+      },
+    );
+  });
+}
+
+async function ensureExistingDirectory(localFolder: string): Promise<void> {
+  const stat = await fs.stat(localFolder);
+  if (!stat.isDirectory()) {
+    throw new Error(`Sync local path is not a directory: ${localFolder}`);
+  }
+}
+
+function normalizeRemoteFolder(remoteFolder: string): string {
+  const trimmed = remoteFolder.trim() || "/root/autodl-sync";
+  return trimmed.startsWith("/") ? trimmed.replace(/\/+$/, "") || "/" : `/${trimmed}`;
+}
+
+function localFilePath(localFolder: string, relativePath: string): string {
+  return path.join(localFolder, ...relativePath.split("/"));
+}
+
+function remoteFilePath(remoteFolder: string, relativePath: string): string {
+  return `${normalizeRemoteFolder(remoteFolder).replace(/\/+$/, "")}/${relativePath}`;
+}
+
+function posixDirname(value: string): string {
+  return path.posix.dirname(value);
+}
+
+function conflictRelativePath(relativePath: string, side: "local" | "remote"): string {
+  const directory = path.posix.dirname(relativePath);
+  const extension = path.posix.extname(relativePath);
+  const basename = path.posix.basename(relativePath, extension);
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "Z");
+  const filename = `${basename}.${side}-conflict-${stamp}${extension}`;
+  return directory === "." ? filename : path.posix.join(directory, filename);
+}
+
+function sameRecord(left: FileRecord, right: FileRecord): boolean {
+  return left.size === right.size && Math.abs(left.mtimeMs - right.mtimeMs) < 2_000;
+}
+
+function quoteRemotePath(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function toPosixPath(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
+function expandHome(value: string): string {
+  if (value === "~") {
+    return os.homedir();
+  }
+  if (value.startsWith("~/") || value.startsWith("~\\")) {
+    return path.join(os.homedir(), value.slice(2));
+  }
+  return value;
+}
+
+function isExcludedPath(relativePath: string, excludeNames: Set<string>): boolean {
+  return relativePath.split("/").some((part) => excludeNames.has(part));
+}
+
+function updateStatus(text: string, tooltip?: string): void {
+  const item = ensureStatusBarItem();
+  item.text = text;
+  item.tooltip = tooltip || "AutoDL folder sync is running. Click to stop sync.";
+  item.show();
+}
+
+function updateIdleStatus(): void {
+  if (!sessions.size) {
+    statusBarItem?.dispose();
+    statusBarItem = undefined;
+    return;
+  }
+  const item = ensureStatusBarItem();
+  item.text = `$(sync) AutoDL Sync: ${sessions.size} active`;
+  item.tooltip = [
+    "AutoDL folder sync is active. Click to stop sync.",
+    "",
+    ...[...sessions.values()].map(
+      (session) => `${session.alias}: ${session.localFolder} <-> ${session.remoteFolder}`,
+    ),
+  ].join("\n");
+  item.show();
+}
+
+function ensureStatusBarItem(): vscode.StatusBarItem {
+  if (!statusBarItem) {
+    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    statusBarItem.command = "autodl.stopFolderSync";
+  }
+  return statusBarItem;
+}
+
+function shortPath(relativePath: string): string {
+  const value = relativePath.length <= 28 ? relativePath : `...${relativePath.slice(-25)}`;
+  return value.replace(/\s+/g, " ");
+}

@@ -42,7 +42,15 @@ import {
   jupyterUrl,
   removeAllManagedSshHosts,
   removeManagedSshHost,
+  sshAlias,
+  writeManagedSshHost,
 } from "./ssh";
+import {
+  activeFolderSyncAliases,
+  startFolderSync,
+  stopAllFolderSync,
+  stopFolderSync,
+} from "./sync";
 import { AutoDLInstance, CreateInstancePayload, QuickCreateBuildResult } from "./types";
 
 let output: vscode.OutputChannel;
@@ -69,6 +77,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(output);
   context.subscriptions.push({ dispose: stopAutoRefresh });
+  context.subscriptions.push({ dispose: stopAllFolderSync });
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("autodlInstances", provider),
     vscode.commands.registerCommand("autodl.setToken", async () => {
@@ -85,6 +94,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("autodl.quickCreate", () => quickCreate(context)),
     vscode.commands.registerCommand("autodl.selectServer", () => selectServer(context)),
     vscode.commands.registerCommand("autodl.setSshPublicKey", () => setSshPublicKey()),
+    vscode.commands.registerCommand("autodl.setSyncFolders", () => setSyncFolders()),
+    vscode.commands.registerCommand("autodl.startFolderSync", (item?: InstanceItem) =>
+      startFolderSyncForInstance(context, item),
+    ),
+    vscode.commands.registerCommand("autodl.stopFolderSync", () => stopFolderSyncCommand()),
     vscode.commands.registerCommand("autodl.cleanSshConfig", () => cleanSshConfig()),
     vscode.commands.registerCommand("autodl.quickCreateLow", () => quickCreate(context, "low")),
     vscode.commands.registerCommand("autodl.quickCreateMid", () => quickCreate(context, "mid")),
@@ -110,6 +124,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 export function deactivate(): void {
   stopAutoRefresh();
+  stopAllFolderSync();
 }
 
 function syncAutoRefresh(instances: AutoDLInstance[]): void {
@@ -287,13 +302,14 @@ async function connectInstance(
     const uuid = mustInstanceUuid(instance);
     const snapshot = await snapshotWithRetry(client, uuid, 3);
     const settings = getSettings();
-    await connectWithRemoteSsh(
+    const alias = await connectWithRemoteSsh(
       uuid,
       snapshot,
       settings.openRemotePath,
       output,
       settings.sshIdentityFile,
     );
+    await startFolderSyncIfConfigured(alias, settings.sync);
   });
 }
 
@@ -403,6 +419,7 @@ async function releaseInstance(
       );
     }
     await client.release(uuid);
+    stopFolderSync(sshAlias(uuid));
     await removeManagedSshHost(uuid);
     provider.refresh();
     void vscode.window.showInformationMessage(`AutoDL instance released: ${uuid}`);
@@ -453,6 +470,7 @@ async function quickCloseAll(context: vscode.ExtensionContext): Promise<void> {
           }
           output.appendLine(`Releasing ${uuid}`);
           await client.release(uuid);
+          stopFolderSync(sshAlias(uuid));
           await removeManagedSshHost(uuid);
         }
       },
@@ -461,6 +479,107 @@ async function quickCloseAll(context: vscode.ExtensionContext): Promise<void> {
     provider.refresh();
     void vscode.window.showInformationMessage("AutoDL quick close completed.");
   });
+}
+
+async function startFolderSyncForInstance(
+  context: vscode.ExtensionContext,
+  item?: InstanceItem,
+): Promise<void> {
+  await runSafely(async () => {
+    const client = await createClient(context);
+    if (!client) {
+      return;
+    }
+    const instance = await resolveInstance(client, item);
+    if (!instance) {
+      return;
+    }
+    const settings = getSettings();
+    if (!settings.sync.localFolder) {
+      await setSyncFolders();
+    }
+    const nextSettings = getSettings();
+    if (!nextSettings.sync.localFolder) {
+      return;
+    }
+    const uuid = mustInstanceUuid(instance);
+    const snapshot = await snapshotWithRetry(client, uuid, 3);
+    const alias = await writeManagedSshHost(uuid, snapshot, nextSettings.sshIdentityFile);
+    await startFolderSyncIfConfigured(alias, {
+      ...nextSettings.sync,
+      enabled: true,
+    });
+  });
+}
+
+async function startFolderSyncIfConfigured(
+  alias: string,
+  sync: ReturnType<typeof getSettings>["sync"],
+): Promise<void> {
+  if (!sync.enabled || !sync.localFolder) {
+    return;
+  }
+  await startFolderSync({
+    alias,
+    localFolder: sync.localFolder,
+    remoteFolder: sync.remoteFolder,
+    intervalMs: sync.intervalMs,
+    excludeNames: sync.excludeNames,
+    output,
+  });
+}
+
+async function setSyncFolders(): Promise<void> {
+  await runSafely(async () => {
+    const settings = getSettings();
+    const selected = await vscode.window.showOpenDialog({
+      title: "AutoDL Sync Local Folder",
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      defaultUri: settings.sync.localFolder
+        ? vscode.Uri.file(settings.sync.localFolder)
+        : vscode.workspace.workspaceFolders?.[0]?.uri,
+      openLabel: "Use Folder",
+    });
+    const localFolder = selected?.[0]?.fsPath;
+    if (!localFolder) {
+      return;
+    }
+    const remoteFolder = await inputValue(
+      "AutoDL sync remote folder",
+      settings.sync.remoteFolder || settings.openRemotePath || "/root/autodl-sync",
+    );
+    if (!remoteFolder) {
+      return;
+    }
+    const config = vscode.workspace.getConfiguration("autodl");
+    await config.update("sync.localFolder", localFolder, vscode.ConfigurationTarget.Global);
+    await config.update("sync.remoteFolder", remoteFolder.trim(), vscode.ConfigurationTarget.Global);
+    await config.update("sync.enabled", true, vscode.ConfigurationTarget.Global);
+    void vscode.window.showInformationMessage(
+      `AutoDL folder sync enabled: ${localFolder} <-> ${remoteFolder.trim()}`,
+    );
+  });
+}
+
+async function stopFolderSyncCommand(): Promise<void> {
+  const aliases = activeFolderSyncAliases();
+  if (!aliases.length) {
+    void vscode.window.showInformationMessage("No active AutoDL folder sync sessions.");
+    return;
+  }
+  const picked =
+    aliases.length === 1
+      ? aliases[0]
+      : await vscode.window.showQuickPick(["All", ...aliases], {
+          title: "Stop AutoDL folder sync",
+        });
+  if (!picked) {
+    return;
+  }
+  const stopped = picked === "All" ? stopAllFolderSync() : Number(stopFolderSync(picked));
+  void vscode.window.showInformationMessage(`Stopped ${stopped} AutoDL folder sync session(s).`);
 }
 
 async function powerOffIfNeeded(client: AutoDLClient, uuid: string): Promise<void> {
