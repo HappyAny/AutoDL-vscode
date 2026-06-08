@@ -65,6 +65,13 @@ export class AutoDLClient {
     });
   }
 
+  async powerOn(instanceUuid: string): Promise<AutoDLResponse<unknown>> {
+    return this.request("POST", "/api/v1/dev/instance/pro/power_on", {
+      instance_uuid: instanceUuid,
+      payload: "gpu",
+    });
+  }
+
   async release(instanceUuid: string): Promise<AutoDLResponse<unknown>> {
     return this.request("POST", "/api/v1/dev/instance/pro/release", {
       instance_uuid: instanceUuid,
@@ -222,24 +229,25 @@ export async function listAllInstances(client: AutoDLClient): Promise<AutoDLInst
 export async function waitForStatus(
   client: AutoDLClient,
   instanceUuid: string,
-  target: string,
+  target: string | string[],
   timeoutMs: number,
   intervalMs: number,
 ): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   let last = "";
+  const targets = Array.isArray(target) ? target : [target];
 
   while (Date.now() <= deadline) {
     const response = await client.status(instanceUuid);
     last = String(response.data || "");
-    if (last === target) {
+    if (targets.includes(last)) {
       return last;
     }
     await sleep(intervalMs);
   }
 
   throw new AutoDLApiError(
-    `Timed out waiting for ${instanceUuid}: current=${last || "unknown"}, target=${target}`,
+    `Timed out waiting for ${instanceUuid}: current=${last || "unknown"}, target=${targets.join("/")}`,
   );
 }
 

@@ -39,21 +39,26 @@ import { AutoDLInstance, CreateInstancePayload, QuickCreateBuildResult } from ".
 
 let output: vscode.OutputChannel;
 let provider: InstancesProvider;
+let autoRefreshTimer: ReturnType<typeof setInterval> | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel("AutoDL");
   provider = new InstancesProvider(async () => {
     const token = await getToken(context);
     if (!token) {
+      syncAutoRefresh([]);
       return { hasToken: false, instances: [] };
     }
+    const instances = await listAllInstances(new AutoDLClient(token, getSettings().apiBaseUrl));
+    syncAutoRefresh(instances);
     return {
       hasToken: true,
-      instances: await listAllInstances(new AutoDLClient(token, getSettings().apiBaseUrl)),
+      instances,
     };
   }, reportErrorToOutput);
 
   context.subscriptions.push(output);
+  context.subscriptions.push({ dispose: stopAutoRefresh });
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("autodlInstances", provider),
     vscode.commands.registerCommand("autodl.setToken", async () => {
@@ -82,6 +87,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("autodl.stop", (item?: InstanceItem) =>
       stopInstance(context, item),
     ),
+    vscode.commands.registerCommand("autodl.turnOn", (item?: InstanceItem) =>
+      turnOnInstance(context, item),
+    ),
     vscode.commands.registerCommand("autodl.release", (item?: InstanceItem) =>
       releaseInstance(context, item),
     ),
@@ -90,7 +98,32 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  // No persistent runtime resources.
+  stopAutoRefresh();
+}
+
+function syncAutoRefresh(instances: AutoDLInstance[]): void {
+  const hasTransitionalInstance = instances.some((instance) => !isStableStatus(instance.status));
+  if (hasTransitionalInstance && !autoRefreshTimer) {
+    autoRefreshTimer = setInterval(() => provider?.refresh(), 3_000);
+  }
+  if (!hasTransitionalInstance) {
+    stopAutoRefresh();
+  }
+}
+
+function stopAutoRefresh(): void {
+  if (!autoRefreshTimer) {
+    return;
+  }
+  clearInterval(autoRefreshTimer);
+  autoRefreshTimer = undefined;
+}
+
+function isStableStatus(status: string | undefined): boolean {
+  const normalized = String(status || "").toLowerCase();
+  return ["running", "shutdown", "stopped", "released", "deleted", "destroyed"].includes(
+    normalized,
+  );
 }
 
 async function createClient(context: vscode.ExtensionContext): Promise<AutoDLClient | undefined> {
@@ -270,9 +303,35 @@ async function stopInstance(
     }
     const uuid = mustInstanceUuid(instance);
     await powerOffIfNeeded(client, uuid);
-    await waitForStatus(client, uuid, "stopped", getSettings().waitTimeoutMs, getSettings().waitIntervalMs);
+    await waitForStatus(
+      client,
+      uuid,
+      ["stopped", "shutdown"],
+      getSettings().waitTimeoutMs,
+      getSettings().waitIntervalMs,
+    );
     provider.refresh();
-    void vscode.window.showInformationMessage(`AutoDL instance stopped: ${uuid}`);
+    void vscode.window.showInformationMessage(`AutoDL instance shutdown: ${uuid}`);
+  });
+}
+
+async function turnOnInstance(
+  context: vscode.ExtensionContext,
+  item?: InstanceItem,
+): Promise<void> {
+  await runSafely(async () => {
+    const client = await createClient(context);
+    if (!client) {
+      return;
+    }
+    const instance = await resolveInstance(client, item);
+    if (!instance) {
+      return;
+    }
+    const uuid = mustInstanceUuid(instance);
+    await client.powerOn(uuid);
+    provider.refresh();
+    void vscode.window.showInformationMessage(`AutoDL instance starting: ${uuid}`);
   });
 }
 
@@ -300,7 +359,13 @@ async function releaseInstance(
     }
     if (needsPowerOff(instance)) {
       await powerOffIfNeeded(client, uuid);
-      await waitForStatus(client, uuid, "stopped", getSettings().waitTimeoutMs, getSettings().waitIntervalMs);
+      await waitForStatus(
+        client,
+        uuid,
+        ["stopped", "shutdown"],
+        getSettings().waitTimeoutMs,
+        getSettings().waitIntervalMs,
+      );
     }
     await client.release(uuid);
     await removeManagedSshHost(uuid);
@@ -346,7 +411,7 @@ async function quickCloseAll(context: vscode.ExtensionContext): Promise<void> {
             await waitForStatus(
               client,
               uuid,
-              "stopped",
+              ["stopped", "shutdown"],
               getSettings().waitTimeoutMs,
               getSettings().waitIntervalMs,
             );

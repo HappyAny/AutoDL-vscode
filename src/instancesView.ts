@@ -64,8 +64,6 @@ export class InstancesProvider implements vscode.TreeDataProvider<TreeNode> {
 }
 
 export class InstanceItem extends vscode.TreeItem {
-  readonly contextValue = "autodlInstance";
-
   constructor(readonly instance: AutoDLInstance) {
     const uuid = instanceUuidOf(instance) || "unknown";
     const status = instance.status || "unknown";
@@ -76,6 +74,7 @@ export class InstanceItem extends vscode.TreeItem {
     this.description = status;
     this.tooltip = instanceTooltip(instance);
     this.iconPath = iconForStatus(status);
+    this.contextValue = instanceContextValue(status);
   }
 }
 
@@ -128,7 +127,8 @@ function instanceDetailItems(instance: AutoDLInstance): DetailItem[] {
     new DetailItem("CPU", displayCpu(instance)),
     new DetailItem("Region", region),
     new DetailItem("Charge", displayCharge(instance.charge_type)),
-    new DetailItem("PAYG Price", instance.payg_price),
+    new DetailItem("折扣后按量价格", displayPrice(instance.payg_price)),
+    new DetailItem("原按量价格", displayPrice(instance.origin_pay_price)),
     new DetailItem("Started", startedValue(instance.started_at)),
     new DetailItem("Created", timeValue(instance.created_at)),
   ].filter((item) => item.description !== "-");
@@ -144,7 +144,8 @@ function instanceTooltip(instance: AutoDLInstance): string {
     `CPU: ${displayCpu(instance) || ""}`,
     `Region: ${instance.region_name || instance.region_sign || ""}`,
     `Charge: ${displayCharge(instance.charge_type)}`,
-    `PAYG Price: ${instance.payg_price ?? ""}`,
+    `折扣后按量价格: ${displayPrice(instance.payg_price)}`,
+    `原按量价格: ${displayPrice(instance.origin_pay_price)}`,
     `Started: ${startedValue(instance.started_at)}`,
   ].join("\n");
 }
@@ -195,6 +196,13 @@ function displayCharge(value: string | undefined): string {
   };
   const label = labels[normalized];
   return label ? `${label} (${value})` : value;
+}
+
+function displayPrice(value: unknown): string {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+  return String(value);
 }
 
 function stringField(instance: AutoDLInstance, key: string): string {
@@ -253,4 +261,15 @@ function iconForStatus(status: string): vscode.ThemeIcon {
     return new vscode.ThemeIcon("debug-stop");
   }
   return new vscode.ThemeIcon("vm");
+}
+
+function instanceContextValue(status: string): string {
+  const normalized = status.toLowerCase();
+  if (normalized === "running") {
+    return "autodlInstanceRunning";
+  }
+  if (normalized === "stopped" || normalized === "shutdown") {
+    return "autodlInstanceShutdown";
+  }
+  return "autodlInstanceOther";
 }

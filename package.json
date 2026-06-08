@@ -2,7 +2,7 @@
   "name": "autodl-vscode",
   "displayName": "AutoDL Control",
   "description": "Quickly create, connect, stop, and release AutoDL Pro instances from VS Code.",
-  "version": "0.1.7",
+  "version": "0.1.9",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -23,6 +23,7 @@
     "onCommand:autodl.quickCreateLow",
     "onCommand:autodl.quickCreateMid",
     "onCommand:autodl.quickCreateHigh",
+    "onCommand:autodl.turnOn",
     "onCommand:autodl.quickCloseAll"
   ],
   "contributes": {
@@ -100,8 +101,13 @@
       },
       {
         "command": "autodl.stop",
-        "title": "AutoDL: Stop Instance",
+        "title": "AutoDL: Shutdown Instance",
         "icon": "$(debug-stop)"
+      },
+      {
+        "command": "autodl.turnOn",
+        "title": "AutoDL: Turn On Instance",
+        "icon": "$(debug-start)"
       },
       {
         "command": "autodl.release",
@@ -134,22 +140,27 @@
       "view/item/context": [
         {
           "command": "autodl.connect",
-          "when": "view == autodlInstances && viewItem == autodlInstance",
+          "when": "view == autodlInstances && viewItem == autodlInstanceRunning",
           "group": "inline@1"
         },
         {
           "command": "autodl.openJupyter",
-          "when": "view == autodlInstances && viewItem == autodlInstance",
+          "when": "view == autodlInstances && viewItem == autodlInstanceRunning",
           "group": "inline@2"
         },
         {
           "command": "autodl.stop",
-          "when": "view == autodlInstances && viewItem == autodlInstance",
+          "when": "view == autodlInstances && viewItem == autodlInstanceRunning",
+          "group": "actions@1"
+        },
+        {
+          "command": "autodl.turnOn",
+          "when": "view == autodlInstances && viewItem == autodlInstanceShutdown",
           "group": "actions@1"
         },
         {
           "command": "autodl.release",
-          "when": "view == autodlInstances && viewItem == autodlInstance",
+          "when": "view == autodlInstances && (viewItem == autodlInstanceRunning || viewItem == autodlInstanceShutdown || viewItem == autodlInstanceOther)",
           "group": "actions@2"
         }
       ],
