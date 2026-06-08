@@ -15,6 +15,8 @@ export class AutoDLApiError extends Error {
     message: string,
     readonly code?: string,
     readonly requestId?: string,
+    readonly endpoint?: string,
+    readonly payload?: object,
   ) {
     super(message);
   }
@@ -101,7 +103,15 @@ export class AutoDLClient {
           res.on("end", () => {
             const raw = Buffer.concat(chunks).toString("utf8");
             if ((res.statusCode ?? 0) >= 400) {
-              reject(new AutoDLApiError(`HTTP ${res.statusCode}: ${raw.slice(0, 500)}`));
+              reject(
+                new AutoDLApiError(
+                  `HTTP ${res.statusCode}: ${raw.slice(0, 500)}; endpoint=${method} ${path}; payload=${JSON.stringify(payload)}`,
+                  undefined,
+                  undefined,
+                  `${method} ${path}`,
+                  payload,
+                ),
+              );
               return;
             }
 
@@ -116,9 +126,11 @@ export class AutoDLClient {
             if (parsed.code !== "Success") {
               reject(
                 new AutoDLApiError(
-                  `AutoDL API error ${parsed.code}: ${parsed.msg || "unknown error"}`,
+                  `AutoDL API error ${parsed.code}: ${parsed.msg || "unknown error"}; endpoint=${method} ${path}; payload=${JSON.stringify(payload)}`,
                   parsed.code,
                   parsed.request_id,
+                  `${method} ${path}`,
+                  payload,
                 ),
               );
               return;
@@ -161,7 +173,7 @@ export function instanceUuidOf(instance: AutoDLInstance): string | undefined {
 }
 
 export async function listAllInstances(client: AutoDLClient): Promise<AutoDLInstance[]> {
-  const pageSize = 50;
+  const pageSize = 10;
   const first = await client.listInstances(1, pageSize);
   const data = first.data || {};
   const rows = [...(data.list || [])];

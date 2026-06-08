@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 import {
+  AutoDLApiError,
   AutoDLClient,
   extractInstanceUuid,
   instanceUuidOf,
@@ -332,6 +333,11 @@ async function runSafely(action: () => Promise<void>): Promise<void> {
     output.show(true);
     output.appendLine("");
     output.appendLine(`Error: ${message}`);
+    if (error instanceof AutoDLApiError && error.code === "RequestParameterIsWrong") {
+      output.appendLine(
+        "Hint: for quick-create, check autodl.quickCreate values, especially cuda_min/cuda_v_from, image_uuid, gpu_spec_uuid, gpu_amount, and system_disk.",
+      );
+    }
     void vscode.window.showErrorMessage(message);
   }
 }
