@@ -9,7 +9,10 @@ export class InstancesProvider implements vscode.TreeDataProvider<InstanceItem> 
 
   readonly onDidChangeTreeData = this.changed.event;
 
-  constructor(private readonly loadInstances: () => Promise<AutoDLInstance[]>) {}
+  constructor(
+    private readonly loadInstances: () => Promise<AutoDLInstance[]>,
+    private readonly onError: (error: unknown) => void,
+  ) {}
 
   refresh(): void {
     this.changed.fire(undefined);
@@ -28,6 +31,7 @@ export class InstancesProvider implements vscode.TreeDataProvider<InstanceItem> 
       this.instances = await this.loadInstances();
       return this.instances.map((instance) => new InstanceItem(instance));
     } catch (error) {
+      this.onError(error);
       void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
       return [];
     }

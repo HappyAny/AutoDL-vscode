@@ -76,9 +76,45 @@ export class AutoDLClient {
     path: string,
     payload: object,
   ): Promise<AutoDLResponse<T>> {
-    const body = JSON.stringify(payload);
+    try {
+      return await this.sendRequest<T>(method, path, payload, "body");
+    } catch (error) {
+      if (
+        method === "GET" &&
+        error instanceof AutoDLApiError &&
+        error.code === "RequestParameterIsWrong"
+      ) {
+        return this.sendRequest<T>(method, path, payload, "query");
+      }
+      throw error;
+    }
+  }
+
+  private async sendRequest<T>(
+    method: "GET" | "POST",
+    path: string,
+    payload: object,
+    payloadMode: "body" | "query",
+  ): Promise<AutoDLResponse<T>> {
+    const body = payloadMode === "body" ? JSON.stringify(payload) : "";
     const url = new URL(`${this.baseUrl}${path}`);
+    if (payloadMode === "query") {
+      for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+        if (value !== undefined && value !== null) {
+          url.searchParams.set(key, String(value));
+        }
+      }
+    }
     const transport = url.protocol === "http:" ? http : https;
+    const headers: Record<string, string | number> = {
+      Accept: "application/json",
+      Authorization: this.token,
+      "User-Agent": "autodl-vscode/0.1.0",
+    };
+    if (body) {
+      headers["Content-Type"] = "application/json";
+      headers["Content-Length"] = Buffer.byteLength(body);
+    }
 
     return new Promise((resolve, reject) => {
       const req = transport.request(
@@ -89,13 +125,7 @@ export class AutoDLClient {
           port: url.port,
           path: `${url.pathname}${url.search}`,
           timeout: this.timeoutMs,
-          headers: {
-            Accept: "application/json",
-            Authorization: this.token,
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(body),
-            "User-Agent": "autodl-vscode/0.1.0",
-          },
+          headers,
         },
         (res) => {
           const chunks: Buffer[] = [];
@@ -105,7 +135,7 @@ export class AutoDLClient {
             if ((res.statusCode ?? 0) >= 400) {
               reject(
                 new AutoDLApiError(
-                  `HTTP ${res.statusCode}: ${raw.slice(0, 500)}; endpoint=${method} ${path}; payload=${JSON.stringify(payload)}`,
+                  `HTTP ${res.statusCode}: ${raw.slice(0, 500)}; endpoint=${method} ${path}; payloadMode=${payloadMode}; payload=${JSON.stringify(payload)}`,
                   undefined,
                   undefined,
                   `${method} ${path}`,
@@ -126,7 +156,7 @@ export class AutoDLClient {
             if (parsed.code !== "Success") {
               reject(
                 new AutoDLApiError(
-                  `AutoDL API error ${parsed.code}: ${parsed.msg || "unknown error"}; endpoint=${method} ${path}; payload=${JSON.stringify(payload)}`,
+                  `AutoDL API error ${parsed.code}: ${parsed.msg || "unknown error"}; endpoint=${method} ${path}; payloadMode=${payloadMode}; payload=${JSON.stringify(payload)}`,
                   parsed.code,
                   parsed.request_id,
                   `${method} ${path}`,
@@ -145,7 +175,9 @@ export class AutoDLClient {
         req.destroy(new AutoDLApiError(`Request timed out after ${this.timeoutMs}ms`));
       });
       req.on("error", reject);
-      req.write(body);
+      if (body) {
+        req.write(body);
+      }
       req.end();
     });
   }
@@ -173,7 +205,7 @@ export function instanceUuidOf(instance: AutoDLInstance): string | undefined {
 }
 
 export async function listAllInstances(client: AutoDLClient): Promise<AutoDLInstance[]> {
-  const pageSize = 10;
+  const pageSize = 1;
   const first = await client.listInstances(1, pageSize);
   const data = first.data || {};
   const rows = [...(data.list || [])];
@@ -243,6 +275,14 @@ export function isActiveInstance(instance: AutoDLInstance): boolean {
 export function needsPowerOff(instance: AutoDLInstance): boolean {
   const status = String(instance.status || "").toLowerCase();
   return !["stopped", "shutdown"].includes(status);
+}
+
+export function isAlreadyStoppedError(error: unknown): boolean {
+  return (
+    error instanceof AutoDLApiError &&
+    error.code === "BadRequest" &&
+    error.message.includes("已关机")
+  );
 }
 
 function sleep(ms: number): Promise<void> {

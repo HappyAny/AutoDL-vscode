@@ -5,6 +5,7 @@ import {
   AutoDLClient,
   extractInstanceUuid,
   instanceUuidOf,
+  isAlreadyStoppedError,
   isActiveInstance,
   listAllInstances,
   needsPowerOff,
@@ -35,7 +36,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return [];
     }
     return listAllInstances(new AutoDLClient(token, getSettings().apiBaseUrl));
-  });
+  }, reportErrorToOutput);
 
   context.subscriptions.push(output);
   context.subscriptions.push(
@@ -97,6 +98,10 @@ async function quickCreate(
       return;
     }
     const plan = buildQuickCreatePayload(selectedProfile, settings.quickCreate);
+    output.show(true);
+    output.appendLine("");
+    output.appendLine(`Quick create profile: ${plan.profileName}`);
+    output.appendLine(`Create payload: ${JSON.stringify(plan.payload)}`);
 
     await vscode.window.withProgress(
       {
@@ -187,7 +192,7 @@ async function stopInstance(
       return;
     }
     const uuid = mustInstanceUuid(instance);
-    await client.powerOff(uuid);
+    await powerOffIfNeeded(client, uuid);
     await waitForStatus(client, uuid, "stopped", getSettings().waitTimeoutMs, getSettings().waitIntervalMs);
     provider.refresh();
     void vscode.window.showInformationMessage(`AutoDL instance stopped: ${uuid}`);
@@ -217,7 +222,7 @@ async function releaseInstance(
       return;
     }
     if (needsPowerOff(instance)) {
-      await client.powerOff(uuid);
+      await powerOffIfNeeded(client, uuid);
       await waitForStatus(client, uuid, "stopped", getSettings().waitTimeoutMs, getSettings().waitIntervalMs);
     }
     await client.release(uuid);
@@ -259,7 +264,7 @@ async function quickCloseAll(context: vscode.ExtensionContext): Promise<void> {
           progress.report({ message: `${index + 1}/${instances.length}: ${uuid}` });
           if (needsPowerOff(instance)) {
             output.appendLine(`Stopping ${uuid}`);
-            await client.powerOff(uuid);
+            await powerOffIfNeeded(client, uuid);
             await waitForStatus(
               client,
               uuid,
@@ -277,6 +282,18 @@ async function quickCloseAll(context: vscode.ExtensionContext): Promise<void> {
     provider.refresh();
     void vscode.window.showInformationMessage("AutoDL quick close completed.");
   });
+}
+
+async function powerOffIfNeeded(client: AutoDLClient, uuid: string): Promise<void> {
+  try {
+    await client.powerOff(uuid);
+  } catch (error) {
+    if (isAlreadyStoppedError(error)) {
+      output.appendLine(`Already stopped: ${uuid}`);
+      return;
+    }
+    throw error;
+  }
 }
 
 async function pickProfile(): Promise<string | undefined> {
@@ -329,15 +346,31 @@ async function runSafely(action: () => Promise<void>): Promise<void> {
   try {
     await action();
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    output.show(true);
-    output.appendLine("");
-    output.appendLine(`Error: ${message}`);
-    if (error instanceof AutoDLApiError && error.code === "RequestParameterIsWrong") {
-      output.appendLine(
-        "Hint: for quick-create, check autodl.quickCreate values, especially cuda_min/cuda_v_from, image_uuid, gpu_spec_uuid, gpu_amount, and system_disk.",
-      );
-    }
+    const message = reportErrorToOutput(error);
     void vscode.window.showErrorMessage(message);
   }
+}
+
+function reportErrorToOutput(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  output.show(true);
+  output.appendLine("");
+  output.appendLine(`Error: ${message}`);
+  if (error instanceof AutoDLApiError) {
+    if (error.endpoint) {
+      output.appendLine(`Endpoint: ${error.endpoint}`);
+    }
+    if (error.payload) {
+      output.appendLine(`Payload: ${JSON.stringify(error.payload)}`);
+    }
+    if (error.requestId) {
+      output.appendLine(`Request ID: ${error.requestId}`);
+    }
+    if (error.code === "RequestParameterIsWrong") {
+      output.appendLine(
+        "Hint: check the endpoint payload above. For quick-create, common causes are cuda_min/cuda_v_from, image_uuid, gpu_spec_uuid, gpu_amount, and system_disk.",
+      );
+    }
+  }
+  return message;
 }
