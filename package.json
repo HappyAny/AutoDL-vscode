@@ -1,0 +1,214 @@
+{
+  "name": "autodl-vscode",
+  "displayName": "AutoDL Control",
+  "description": "Quickly create, connect, stop, and release AutoDL Pro instances from VS Code.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onView:autodlInstances",
+    "onCommand:autodl.setToken",
+    "onCommand:autodl.refresh",
+    "onCommand:autodl.quickCreate",
+    "onCommand:autodl.quickCreateLow",
+    "onCommand:autodl.quickCreateMid",
+    "onCommand:autodl.quickCreateHigh",
+    "onCommand:autodl.quickCloseAll"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "autodl",
+          "title": "AutoDL",
+          "icon": "media/autodl.svg"
+        }
+      ]
+    },
+    "views": {
+      "autodl": [
+        {
+          "id": "autodlInstances",
+          "name": "Instances",
+          "contextualTitle": "AutoDL Instances"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "autodlInstances",
+        "contents": "Set your AutoDL token to manage instances.\n[Set Token](command:autodl.setToken)\n[Quick Create](command:autodl.quickCreate)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "autodl.setToken",
+        "title": "AutoDL: Set Token"
+      },
+      {
+        "command": "autodl.clearToken",
+        "title": "AutoDL: Clear Token"
+      },
+      {
+        "command": "autodl.refresh",
+        "title": "AutoDL: Refresh Instances",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "autodl.quickCreate",
+        "title": "AutoDL: Quick Create"
+      },
+      {
+        "command": "autodl.quickCreateLow",
+        "title": "AutoDL: Quick Create Low"
+      },
+      {
+        "command": "autodl.quickCreateMid",
+        "title": "AutoDL: Quick Create Mid"
+      },
+      {
+        "command": "autodl.quickCreateHigh",
+        "title": "AutoDL: Quick Create High"
+      },
+      {
+        "command": "autodl.connect",
+        "title": "AutoDL: Connect with Remote SSH",
+        "icon": "$(remote)"
+      },
+      {
+        "command": "autodl.openJupyter",
+        "title": "AutoDL: Open Jupyter",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "autodl.stop",
+        "title": "AutoDL: Stop Instance",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "autodl.release",
+        "title": "AutoDL: Release Instance",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "autodl.quickCloseAll",
+        "title": "AutoDL: Stop and Release All Active Instances"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "autodl.refresh",
+          "when": "view == autodlInstances",
+          "group": "navigation@1"
+        },
+        {
+          "command": "autodl.quickCreate",
+          "when": "view == autodlInstances",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "autodl.connect",
+          "when": "view == autodlInstances && viewItem == autodlInstance",
+          "group": "inline@1"
+        },
+        {
+          "command": "autodl.openJupyter",
+          "when": "view == autodlInstances && viewItem == autodlInstance",
+          "group": "inline@2"
+        },
+        {
+          "command": "autodl.stop",
+          "when": "view == autodlInstances && viewItem == autodlInstance",
+          "group": "actions@1"
+        },
+        {
+          "command": "autodl.release",
+          "when": "view == autodlInstances && viewItem == autodlInstance",
+          "group": "actions@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "autodl.clearToken"
+        },
+        {
+          "command": "autodl.quickCloseAll"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AutoDL",
+      "properties": {
+        "autodl.apiBaseUrl": {
+          "type": "string",
+          "default": "https://api.autodl.com",
+          "description": "AutoDL Pro API base URL."
+        },
+        "autodl.openRemotePath": {
+          "type": "string",
+          "default": "/root",
+          "description": "Remote folder opened after connecting through Remote SSH."
+        },
+        "autodl.waitTimeoutSeconds": {
+          "type": "number",
+          "default": 900,
+          "description": "Timeout used when waiting for an instance status."
+        },
+        "autodl.waitIntervalSeconds": {
+          "type": "number",
+          "default": 5,
+          "description": "Polling interval used when waiting for an instance status."
+        },
+        "autodl.quickCreate": {
+          "type": "object",
+          "default": {
+            "defaults": {
+              "image_uuid": "base-image-l2t43iu6uk",
+              "cuda_min": 130,
+              "gpu_amount": 1,
+              "system_disk": 0,
+              "data_centers": []
+            },
+            "profiles": {
+              "low": {
+                "label": "Low 4080(S) 32G",
+                "gpu_spec_uuid": "v-32g-p"
+              },
+              "mid": {
+                "label": "Mid 5090 32G",
+                "gpu_spec_uuid": "5090-p"
+              },
+              "high": {
+                "label": "High RTX PRO 6000",
+                "gpu_spec_uuid": "pro6000-p"
+              }
+            }
+          },
+          "description": "Quick-create profiles and defaults. Values follow AutoDL Pro API payload names."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "node ./scripts/ensure-dist.cjs && vsce package --allow-missing-repository --out dist/autodl-control.vsix",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.6.3",
+    "typescript": "^5.9.3"
+  }
+}
