@@ -123,6 +123,11 @@ export async function writeManagedSshHost(
     `  Port ${port}`,
     "  PreferredAuthentications publickey,password",
     "  PasswordAuthentication yes",
+    `  HostKeyAlias ${alias}`,
+    "  StrictHostKeyChecking no",
+    "  CheckHostIP no",
+    "  UpdateHostKeys no",
+    "  UserKnownHostsFile ~/.ssh/autodl-vscode-known_hosts",
     ...(identityFile ? [`  IdentityFile ${quoteSshConfigValue(identityFile)}`] : []),
     ...(identityFile ? ["  IdentitiesOnly yes"] : []),
     `# <<< autodl-vscode ${alias}`,
@@ -134,7 +139,7 @@ export async function writeManagedSshHost(
     "m",
   );
   const withoutOldBlock = existing.replace(pattern, "\n").trimEnd();
-  const next = `${withoutOldBlock}${withoutOldBlock ? "\n\n" : ""}${block}`;
+  const next = `${block}${withoutOldBlock ? `\n${withoutOldBlock}` : ""}`;
   await fs.writeFile(configPath, next, "utf8");
   return alias;
 }

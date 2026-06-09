@@ -33,6 +33,7 @@ Commands:
 - `AutoDL: Refresh GPU and Image Catalogs` - update cached GPU specs, public images, and private images
 - `AutoDL: Set Sync Folders`
 - `AutoDL: Start Folder Sync`
+- `AutoDL: Upload Sync Folder`
 - `AutoDL: Stop Folder Sync`
 - `AutoDL: Quick Create`
 - `AutoDL: Select Server` - choose GPU model, GPU count, image, CUDA, extra system storage, data centers, name, and start command
@@ -43,7 +44,7 @@ Commands:
 
 Instance actions in the tree:
 
-- Running instances: Connect with Remote SSH, Open Jupyter, Shutdown Instance, Release Instance
+- Running instances: Connect with Remote SSH, Open Jupyter, Upload Sync Folder, Shutdown Instance, Release Instance
 - Shutdown instances: Turn On Instance, Release Instance
 
 When an instance is released through the extension, its managed `Host autodl-<instance>` SSH config block is removed. Use `AutoDL: Clean SSH Config` to remove all stale AutoDL-managed blocks.
@@ -54,6 +55,10 @@ The GPU and image catalogs are cached in VS Code global storage. Use the cloud-d
 
 Use `AutoDL: Set Sync Folders` to choose a local folder and a remote folder. After that, `AutoDL: Connect with Remote SSH` automatically starts a background sync session for the instance.
 
+The folder icon in the AutoDL view title runs the same folder configuration command, so you can reselect both local and remote sync folders without opening the command palette.
+
+Use the cloud-upload button on a running instance, or run `AutoDL: Upload Sync Folder`, for a one-shot local-to-remote upload. It uses the same configured local and remote folders, overwrites remote files with the same relative path, and does not delete remote-only files.
+
 Sync behavior is conservative:
 
 - New files on either side are copied to the other side.
@@ -62,11 +67,11 @@ Sync behavior is conservative:
 - Deletes are not synced.
 - Default ignored names include `.git`, `node_modules`, virtualenv folders, and Python cache folders.
 
-Folder sync uses local `ssh` and `scp` with `BatchMode=yes`, so it requires key-based SSH login. Run `AutoDL: Set SSH Public Key` before creating new instances for hands-free sync.
+Folder sync and one-shot upload use local `ssh` with `BatchMode=yes`, so they require key-based SSH login. Run `AutoDL: Set SSH Public Key` before creating new instances for hands-free sync.
 
 Progress is visible in two places:
 
-- The VS Code status bar shows scanning and byte-level transfer progress, including percentage and transferred size. Click it to stop active sync sessions.
+- The VS Code status bar shows scanning and streaming byte-level transfer progress, including percentage and transferred size. Click it to stop active sync sessions.
 - The AutoDL output panel logs each uploaded, downloaded, or conflict-copied file plus the per-cycle summary.
 
 ## Defaults
@@ -94,6 +99,8 @@ When Connect is clicked, the extension:
 2. Writes a managed host entry to `~/.ssh/config`.
 3. Copies the root password to the clipboard.
 4. Opens `vscode-remote://ssh-remote+autodl-<instance>/root`.
+
+Managed `autodl-*` SSH hosts use a separate `~/.ssh/autodl-vscode-known_hosts` file and non-interactive host-key acceptance so AutoDL proxy endpoints do not block folder upload or sync.
 
 The VS Code Remote - SSH extension should be installed for the remote window to open cleanly.
 

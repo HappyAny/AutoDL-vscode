@@ -50,6 +50,7 @@ import {
   startFolderSync,
   stopAllFolderSync,
   stopFolderSync,
+  uploadFolderOnce,
 } from "./sync";
 import { AutoDLInstance, CreateInstancePayload, QuickCreateBuildResult } from "./types";
 
@@ -97,6 +98,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("autodl.setSyncFolders", () => setSyncFolders()),
     vscode.commands.registerCommand("autodl.startFolderSync", (item?: InstanceItem) =>
       startFolderSyncForInstance(context, item),
+    ),
+    vscode.commands.registerCommand("autodl.uploadSyncFolder", (item?: InstanceItem) =>
+      uploadSyncFolder(context, item),
     ),
     vscode.commands.registerCommand("autodl.stopFolderSync", () => stopFolderSyncCommand()),
     vscode.commands.registerCommand("autodl.cleanSshConfig", () => cleanSshConfig()),
@@ -508,6 +512,41 @@ async function startFolderSyncForInstance(
     await startFolderSyncIfConfigured(alias, {
       ...nextSettings.sync,
       enabled: true,
+    });
+  });
+}
+
+async function uploadSyncFolder(
+  context: vscode.ExtensionContext,
+  item?: InstanceItem,
+): Promise<void> {
+  await runSafely(async () => {
+    const client = await createClient(context);
+    if (!client) {
+      return;
+    }
+    const instance = await resolveInstance(client, item);
+    if (!instance) {
+      return;
+    }
+    let settings = getSettings();
+    if (!settings.sync.localFolder) {
+      await setSyncFolders();
+      settings = getSettings();
+    }
+    if (!settings.sync.localFolder) {
+      return;
+    }
+
+    const uuid = mustInstanceUuid(instance);
+    const snapshot = await snapshotWithRetry(client, uuid, 3);
+    const alias = await writeManagedSshHost(uuid, snapshot, settings.sshIdentityFile);
+    await uploadFolderOnce({
+      alias,
+      localFolder: settings.sync.localFolder,
+      remoteFolder: settings.sync.remoteFolder,
+      excludeNames: settings.sync.excludeNames,
+      output,
     });
   });
 }

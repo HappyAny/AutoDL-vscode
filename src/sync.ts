@@ -3,6 +3,7 @@ import { createReadStream, createWriteStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Transform, TransformCallback } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import * as vscode from "vscode";
@@ -24,6 +25,14 @@ export interface FolderSyncStartOptions {
   output: vscode.OutputChannel;
 }
 
+export interface FolderUploadOptions {
+  alias: string;
+  localFolder: string;
+  remoteFolder: string;
+  excludeNames: string[];
+  output: vscode.OutputChannel;
+}
+
 interface FileRecord {
   mtimeMs: number;
   size: number;
@@ -40,13 +49,20 @@ interface SyncCounters {
   conflicts: number;
 }
 
-interface SyncSession {
+interface SyncContext {
   alias: string;
   localFolder: string;
   remoteFolder: string;
-  intervalMs: number;
   excludeNames: Set<string>;
   output: vscode.OutputChannel;
+  operationLabel: string;
+  statusLabel: string;
+  progressBaseBytes?: number;
+  progressTotalBytes?: number;
+}
+
+interface SyncSession extends SyncContext {
+  intervalMs: number;
   previous: Map<string, SyncedRecord>;
   running: boolean;
   disposed: boolean;
@@ -68,6 +84,8 @@ export async function startFolderSync(options: FolderSyncStartOptions): Promise<
     intervalMs: Math.max(options.intervalMs, 3_000),
     excludeNames: new Set(options.excludeNames.filter(Boolean)),
     output: options.output,
+    operationLabel: "Folder sync",
+    statusLabel: "AutoDL Sync",
     previous: new Map(),
     running: false,
     disposed: false,
@@ -84,6 +102,56 @@ export async function startFolderSync(options: FolderSyncStartOptions): Promise<
   );
   updateIdleStatus();
   void runSyncCycle(session);
+}
+
+export async function uploadFolderOnce(options: FolderUploadOptions): Promise<void> {
+  const localFolder = expandHome(options.localFolder);
+  await ensureExistingDirectory(localFolder);
+
+  const context: SyncContext = {
+    alias: options.alias,
+    localFolder,
+    remoteFolder: normalizeRemoteFolder(options.remoteFolder),
+    excludeNames: new Set(options.excludeNames.filter(Boolean)),
+    output: options.output,
+    operationLabel: "Folder upload",
+    statusLabel: "AutoDL Upload",
+  };
+
+  try {
+    context.output.show(true);
+    context.output.appendLine("");
+    context.output.appendLine(
+      `Folder upload started: ${localFolder} -> ${context.alias}:${context.remoteFolder}`,
+    );
+
+    updateStatus(`$(sync~spin) AutoDL Upload: scanning ${context.alias}`);
+    await runSsh(context.alias, `mkdir -p ${quoteRemotePath(context.remoteFolder)}`, 30_000);
+    const local = await scanLocal(context.localFolder, context.excludeNames);
+    const entries = [...local.entries()].sort(([left], [right]) => left.localeCompare(right));
+    const totalBytes = entries.reduce((sum, [, record]) => sum + record.size, 0);
+
+    if (!entries.length) {
+      context.output.appendLine(`Folder upload ${context.alias}: no files to upload.`);
+      return;
+    }
+
+    let completedBytes = 0;
+    for (let index = 0; index < entries.length; index += 1) {
+      const [relativePath, record] = entries[index];
+      context.progressBaseBytes = completedBytes;
+      context.progressTotalBytes = totalBytes;
+      updateTransferStatus(context, "upload", completedBytes, totalBytes);
+      await uploadFile(context, relativePath, relativePath, record.size);
+      completedBytes += record.size;
+    }
+
+    context.output.appendLine(
+      `Folder upload completed: ${context.alias}, ${entries.length} file(s), ${formatBytes(totalBytes)}`,
+    );
+  } finally {
+    updateIdleStatus();
+  }
 }
 
 export function stopFolderSync(alias: string): boolean {
@@ -229,17 +297,26 @@ async function reconcile(
 }
 
 async function uploadFile(
-  session: SyncSession,
+  session: SyncContext,
   sourceRelativePath: string,
   targetRelativePath: string,
   totalBytes: number,
 ): Promise<void> {
-  updateStatus(
-    `$(cloud-upload) AutoDL Sync: ${shortPath(sourceRelativePath)}`,
-    `${session.alias}\nUpload ${sourceRelativePath}`,
-  );
+  if (session.progressTotalBytes !== undefined) {
+    updateTransferStatus(
+      session,
+      "upload",
+      session.progressBaseBytes ?? 0,
+      session.progressTotalBytes,
+    );
+  } else {
+    updateStatus(
+      `$(cloud-upload) ${session.statusLabel}: ${shortPath(sourceRelativePath)}`,
+      `${session.alias}\nUpload ${sourceRelativePath}`,
+    );
+  }
   session.output.appendLine(
-    `Folder sync ${session.alias}: upload ${sourceRelativePath} -> ${targetRelativePath}`,
+    `${session.operationLabel} ${session.alias}: upload ${sourceRelativePath} -> ${targetRelativePath}`,
   );
   const localPath = localFilePath(session.localFolder, sourceRelativePath);
   const remotePath = remoteFilePath(session.remoteFolder, targetRelativePath);
@@ -252,17 +329,17 @@ async function uploadFile(
 }
 
 async function downloadFile(
-  session: SyncSession,
+  session: SyncContext,
   sourceRelativePath: string,
   targetRelativePath: string,
   totalBytes: number,
 ): Promise<void> {
   updateStatus(
-    `$(cloud-download) AutoDL Sync: ${shortPath(sourceRelativePath)}`,
+    `$(cloud-download) ${session.statusLabel}: ${shortPath(sourceRelativePath)}`,
     `${session.alias}\nDownload ${sourceRelativePath}`,
   );
   session.output.appendLine(
-    `Folder sync ${session.alias}: download ${sourceRelativePath} -> ${targetRelativePath}`,
+    `${session.operationLabel} ${session.alias}: download ${sourceRelativePath} -> ${targetRelativePath}`,
   );
   const localPath = localFilePath(session.localFolder, targetRelativePath);
   await fs.mkdir(path.dirname(localPath), { recursive: true });
@@ -271,7 +348,7 @@ async function downloadFile(
 }
 
 async function streamUpload(
-  session: SyncSession,
+  session: SyncContext,
   localPath: string,
   remotePath: string,
   relativePath: string,
@@ -282,7 +359,7 @@ async function streamUpload(
     `cat > ${quoteRemotePath(tmpRemotePath)}`,
     `mv ${quoteRemotePath(tmpRemotePath)} ${quoteRemotePath(remotePath)}`,
   ].join(" && ");
-  const child = cp.spawn("ssh", ["-o", "BatchMode=yes", session.alias, command], {
+  const child = cp.spawn("ssh", sshArgs(session.alias, command), {
     windowsHide: true,
   });
   child.stdout?.resume();
@@ -290,21 +367,17 @@ async function streamUpload(
   const stderr = collectStderr(child);
   const updateProgress = transferProgress(session, "upload", relativePath, totalBytes);
   const source = createReadStream(localPath);
-  let transferred = 0;
-  source.on("data", (chunk: Buffer | string) => {
-    transferred += Buffer.byteLength(chunk);
-    updateProgress(transferred);
-  });
+  const progressStream = createProgressStream(updateProgress);
 
   try {
     updateProgress(0, true);
     await Promise.all([
-      pipeline(source, child.stdin),
+      pipeline(source, progressStream, child.stdin),
       waitForChild(child, stderr, `upload ${relativePath}`),
     ]);
     updateProgress(totalBytes, true);
     session.output.appendLine(
-      `Folder sync ${session.alias}: upload complete ${relativePath} (${formatBytes(totalBytes)})`,
+      `${session.operationLabel} ${session.alias}: upload complete ${relativePath} (${formatBytes(totalBytes)})`,
     );
   } catch (error) {
     child.kill();
@@ -313,7 +386,7 @@ async function streamUpload(
 }
 
 async function streamDownload(
-  session: SyncSession,
+  session: SyncContext,
   remotePath: string,
   localPath: string,
   relativePath: string,
@@ -322,7 +395,7 @@ async function streamDownload(
   const tmpLocalPath = `${localPath}.autodl-sync-${process.pid}-${Date.now()}.tmp`;
   const child = cp.spawn(
     "ssh",
-    ["-o", "BatchMode=yes", session.alias, `cat ${quoteRemotePath(remotePath)}`],
+    sshArgs(session.alias, `cat ${quoteRemotePath(remotePath)}`),
     {
       windowsHide: true,
     },
@@ -331,22 +404,18 @@ async function streamDownload(
   const stderr = collectStderr(child);
   const updateProgress = transferProgress(session, "download", relativePath, totalBytes);
   const target = createWriteStream(tmpLocalPath);
-  let transferred = 0;
-  child.stdout.on("data", (chunk: Buffer | string) => {
-    transferred += Buffer.byteLength(chunk);
-    updateProgress(transferred);
-  });
+  const progressStream = createProgressStream(updateProgress);
 
   try {
     updateProgress(0, true);
     await Promise.all([
-      pipeline(child.stdout, target),
+      pipeline(child.stdout, progressStream, target),
       waitForChild(child, stderr, `download ${relativePath}`),
     ]);
     await fs.rename(tmpLocalPath, localPath);
     updateProgress(totalBytes, true);
     session.output.appendLine(
-      `Folder sync ${session.alias}: download complete ${relativePath} (${formatBytes(totalBytes)})`,
+      `${session.operationLabel} ${session.alias}: download complete ${relativePath} (${formatBytes(totalBytes)})`,
     );
   } catch (error) {
     child.kill();
@@ -448,7 +517,28 @@ async function runSsh(
   command: string,
   timeoutMs: number,
 ): Promise<{ stdout: string; stderr: string }> {
-  return runCommand("ssh", ["-o", "BatchMode=yes", alias, command], timeoutMs);
+  return runCommand("ssh", sshArgs(alias, command), timeoutMs);
+}
+
+function sshArgs(alias: string, command: string): string[] {
+  return [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=no",
+    "-o",
+    "CheckHostIP=no",
+    "-o",
+    "UpdateHostKeys=no",
+    "-o",
+    `HostKeyAlias=${alias}`,
+    "-o",
+    `UserKnownHostsFile=${toPosixPath(
+      path.join(os.homedir(), ".ssh", "autodl-vscode-known_hosts"),
+    )}`,
+    alias,
+    command,
+  ];
 }
 
 function runCommand(
@@ -505,6 +595,23 @@ function waitForChild(
         ),
       );
     });
+  });
+}
+
+function createProgressStream(
+  updateProgress: (transferredBytes: number, force?: boolean) => void,
+): Transform {
+  let transferredBytes = 0;
+  return new Transform({
+    transform(
+      chunk: Buffer | string,
+      encoding: BufferEncoding,
+      callback: TransformCallback,
+    ): void {
+      transferredBytes += Buffer.byteLength(chunk, encoding);
+      updateProgress(transferredBytes);
+      callback(null, chunk);
+    },
   });
 }
 
@@ -606,7 +713,7 @@ function shortPath(relativePath: string): string {
 }
 
 function transferProgress(
-  session: SyncSession,
+  session: SyncContext,
   direction: "upload" | "download",
   relativePath: string,
   totalBytes: number,
@@ -616,22 +723,34 @@ function transferProgress(
   const verb = direction === "upload" ? "Upload" : "Download";
   return (transferredBytes: number, force = false) => {
     const now = Date.now();
-    if (!force && now - lastUpdate < 250 && transferredBytes < totalBytes) {
+    if (!force && now - lastUpdate < 100 && transferredBytes < totalBytes) {
       return;
     }
     lastUpdate = now;
-    const percent =
-      totalBytes > 0 ? Math.min(100, Math.floor((transferredBytes / totalBytes) * 100)) : 100;
-    const text = `${icon} ${percent}% ${formatBytes(transferredBytes)}/${formatBytes(totalBytes)}`;
-    updateStatus(
-      text,
-      [
-        `${session.alias}`,
-        `${verb}: ${relativePath}`,
-        `${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)} (${percent}%)`,
-      ].join("\n"),
-    );
+    const displayedBytes = (session.progressBaseBytes ?? 0) + transferredBytes;
+    const displayedTotal = session.progressTotalBytes ?? totalBytes;
+    updateTransferStatus(session, direction, displayedBytes, displayedTotal, [
+      `${session.alias}`,
+      `${verb}: ${relativePath}`,
+    ]);
   };
+}
+
+function updateTransferStatus(
+  session: SyncContext,
+  direction: "upload" | "download",
+  transferredBytes: number,
+  totalBytes: number,
+  tooltipPrefix: string[] = [session.alias],
+): void {
+  const icon = direction === "upload" ? "$(cloud-upload)" : "$(cloud-download)";
+  const percent =
+    totalBytes > 0 ? Math.min(100, Math.floor((transferredBytes / totalBytes) * 100)) : 100;
+  const transferText = `${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)}`;
+  updateStatus(
+    `${icon} ${percent}% ${transferText}`,
+    [...tooltipPrefix, `${transferText} (${percent}%)`].join("\n"),
+  );
 }
 
 function formatBytes(value: number): string {

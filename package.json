@@ -2,7 +2,7 @@
   "name": "autodl-vscode",
   "displayName": "AutoDL Control",
   "description": "Quickly create, connect, stop, and release AutoDL Pro instances from VS Code.",
-  "version": "0.1.17",
+  "version": "0.1.21",
   "publisher": "local",
   "license": "MIT",
   "icon": "media/autodl-icon.png",
@@ -23,6 +23,7 @@
     "onCommand:autodl.setSshPublicKey",
     "onCommand:autodl.setSyncFolders",
     "onCommand:autodl.startFolderSync",
+    "onCommand:autodl.uploadSyncFolder",
     "onCommand:autodl.stopFolderSync",
     "onCommand:autodl.cleanSshConfig",
     "onCommand:autodl.quickCreateLow",
@@ -85,12 +86,18 @@
       },
       {
         "command": "autodl.setSyncFolders",
-        "title": "AutoDL: Set Sync Folders"
+        "title": "AutoDL: Set Sync Folders",
+        "icon": "$(folder-opened)"
       },
       {
         "command": "autodl.startFolderSync",
         "title": "AutoDL: Start Folder Sync",
         "icon": "$(sync)"
+      },
+      {
+        "command": "autodl.uploadSyncFolder",
+        "title": "AutoDL: Upload Sync Folder",
+        "icon": "$(cloud-upload)"
       },
       {
         "command": "autodl.stopFolderSync",
@@ -163,6 +170,11 @@
           "command": "autodl.selectServer",
           "when": "view == autodlInstances",
           "group": "navigation@4"
+        },
+        {
+          "command": "autodl.setSyncFolders",
+          "when": "view == autodlInstances",
+          "group": "navigation@5"
         }
       ],
       "view/item/context": [
@@ -175,6 +187,11 @@
           "command": "autodl.openJupyter",
           "when": "view == autodlInstances && viewItem == autodlInstanceRunning",
           "group": "inline@2"
+        },
+        {
+          "command": "autodl.uploadSyncFolder",
+          "when": "view == autodlInstances && viewItem == autodlInstanceRunning",
+          "group": "inline@3"
         },
         {
           "command": "autodl.stop",
@@ -209,6 +226,9 @@
         },
         {
           "command": "autodl.startFolderSync"
+        },
+        {
+          "command": "autodl.uploadSyncFolder"
         },
         {
           "command": "autodl.stopFolderSync"
