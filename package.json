@@ -6,6 +6,14 @@
   "publisher": "local",
   "license": "MIT",
   "icon": "media/autodl-icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HappyAny/AutoDL-vscode.git"
+  },
+  "homepage": "https://github.com/HappyAny/AutoDL-vscode#readme",
+  "bugs": {
+    "url": "https://github.com/HappyAny/AutoDL-vscode/issues"
+  },
   "keywords": [
     "autodl",
     "vscode",
@@ -19,6 +27,9 @@
   },
   "categories": [
     "Other"
+  ],
+  "extensionKind": [
+    "ui"
   ],
   "main": "./out/extension.js",
   "activationEvents": [

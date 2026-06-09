@@ -10,4 +10,5 @@ out/**/*.map
 *.vsix
 .git/**
 .github/**
+.gitattributes
 .gitignore

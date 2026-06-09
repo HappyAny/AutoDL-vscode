@@ -2,6 +2,8 @@
 
 ## 0.1.21
 
+- Added local UI extension placement for cross-platform Remote - SSH behavior.
+- Added macOS/Linux install script and Chinese README.
 - Documented AutoDL Pro API verification requirements, stopped-instance retention, billing rules, and shutdown/release cost guidance.
 - Added a one-shot upload action for running instances.
 - Added a view-title folder button to configure local and remote sync folders.

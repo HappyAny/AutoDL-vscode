@@ -2,6 +2,8 @@
 
 VS Code extension for controlling AutoDL Pro instances from the Activity Bar.
 
+[中文文档](README.zh-CN.md)
+
 ## Features
 
 - List AutoDL Pro instances with readable GPU, CPU, region, status, and price details.
@@ -20,6 +22,7 @@ VS Code extension for controlling AutoDL Pro instances from the Activity Bar.
 - Local OpenSSH `ssh` available on PATH.
 - An AutoDL Pro API token.
 - AutoDL requires personal real-name verification or enterprise verification before using the Container Instance Pro API.
+- The extension runs on the local VS Code UI side. This keeps AutoDL API calls, SSH config writes, and folder sync operations on your local machine, including when you open a Remote - SSH window.
 
 ## AutoDL Account and Billing Notes
 
@@ -38,20 +41,27 @@ References: [Container Instance Pro API](https://www.autodl.com/docs/instance_pr
 
 ## Fast Install
 
-From this directory:
+Windows PowerShell:
 
 ```powershell
 .\scripts\install.ps1
 ```
 
-The script runs `npm install`, builds `dist\autodl-control.vsix`, and installs it into VS Code with `code --install-extension`.
+macOS or Linux:
+
+```bash
+chmod +x ./scripts/install.sh
+./scripts/install.sh
+```
+
+The install script runs `npm install`, builds `dist/autodl-control.vsix`, and installs it into VS Code with `code --install-extension`.
 
 Manual install:
 
 ```powershell
 npm install
 npm run package
-code --install-extension .\dist\autodl-control.vsix --force
+code --install-extension ./dist/autodl-control.vsix --force
 ```
 
 ## Usage
