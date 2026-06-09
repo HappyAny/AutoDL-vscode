@@ -170,3 +170,16 @@ npm install
 npm run compile
 npm run package
 ```
+
+## GitHub Actions Packaging
+
+The CI workflow builds the VSIX on every push, pull request, or manual workflow run. Download `autodl-control-vsix` from the workflow run artifacts when you need a test package.
+
+To publish a GitHub Release with the compiled VSIX attached, push a version tag:
+
+```powershell
+git tag v0.1.21
+git push origin v0.1.21
+```
+
+The release job creates a GitHub Release for the tag and uploads `dist/autodl-control.vsix`.

@@ -5,10 +5,16 @@ on:
     branches:
       - main
       - master
+    tags:
+      - "v*"
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  package:
     runs-on: windows-latest
 
     steps:
@@ -29,3 +35,38 @@ jobs:
 
       - name: Package VSIX
         run: npm run package
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: autodl-control-vsix
+          path: dist/autodl-control.vsix
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: autodl-control-vsix
+          path: dist
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${{ github.ref_name }}"
+          ".\dist\autodl-control.vsix"
+          --repo "${{ github.repository }}"
+          --title "AutoDL Control ${{ github.ref_name }}"
+          --notes "Install the VSIX from this release. See CHANGELOG.md for details."
