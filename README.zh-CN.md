@@ -98,7 +98,7 @@ GPU 和镜像列表会缓存在 VS Code global storage 中。点击 AutoDL 视�
 
 ## 目录同步
 
-使用 `AutoDL: Set Sync Folders` 选择本地目录并输入远端目录。之后点击 `AutoDL: Connect with Remote SSH` 连接实例时，扩展会自动为该实例启动后台同步。
+使用 `AutoDL: Set Sync Folders` 选择本地目录并输入远端目录。连接 Remote - SSH 不会自动启动同步；只有明确执行 `AutoDL: Start Folder Sync` 时，才会启动后台双向同步。
 
 AutoDL 视图标题栏里的文件夹图标也会执行同一个目录配置命令，可以直接重新选择本地和远端同步目录。
 
@@ -185,8 +185,8 @@ CI 会在每次 push、pull request 或手动运行时构建 VSIX。需要测试
 发布 GitHub Release 并附带编译好的 VSIX 时，推送版本 tag：
 
 ```bash
-git tag v0.1.23
-git push origin v0.1.23
+git tag v0.2.3
+git push origin v0.2.3
 ```
 
 Release job 会为该 tag 创建 GitHub Release，并上传 `dist/autodl-control.vsix`。

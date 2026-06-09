@@ -98,7 +98,7 @@ The GPU and image catalogs are cached in VS Code global storage. Use the cloud-d
 
 ## Folder Sync
 
-Use `AutoDL: Set Sync Folders` to choose a local folder and a remote folder. After that, `AutoDL: Connect with Remote SSH` automatically starts a background sync session for the instance.
+Use `AutoDL: Set Sync Folders` to choose a local folder and a remote folder. Connecting with Remote - SSH does not start sync automatically; use `AutoDL: Start Folder Sync` when you explicitly want background bidirectional sync.
 
 The folder icon in the AutoDL view title runs the same folder configuration command, so you can reselect both local and remote sync folders without opening the command palette.
 
@@ -189,8 +189,8 @@ The CI workflow builds the VSIX on every push, pull request, or manual workflow 
 To publish a GitHub Release with the compiled VSIX attached, push a version tag:
 
 ```powershell
-git tag v0.1.23
-git push origin v0.1.23
+git tag v0.2.3
+git push origin v0.2.3
 ```
 
 The release job creates a GitHub Release for the tag and uploads `dist/autodl-control.vsix`.

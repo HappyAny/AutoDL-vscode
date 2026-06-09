@@ -309,7 +309,7 @@ async function connectInstance(
     const uuid = mustInstanceUuid(instance);
     const snapshot = await snapshotWithRetry(client, uuid, 3);
     const settings = getSettings();
-    const alias = await connectWithRemoteSsh(
+    await connectWithRemoteSsh(
       uuid,
       snapshot,
       settings.openRemotePath,
@@ -323,7 +323,6 @@ async function connectInstance(
         `Warning: failed to remember VS Code recent path for ${uuid}: ${formatError(error)}`,
       );
     }
-    await startFolderSyncIfConfigured(alias, settings.sync);
   });
 }
 
@@ -550,10 +549,7 @@ async function startFolderSyncForInstance(
     const uuid = mustInstanceUuid(instance);
     const snapshot = await snapshotWithRetry(client, uuid, 3);
     const alias = await writeManagedSshHost(uuid, snapshot, nextSettings.sshIdentityFile);
-    await startFolderSyncIfConfigured(alias, {
-      ...nextSettings.sync,
-      enabled: true,
-    });
+    await startFolderSyncForAlias(alias, nextSettings.sync);
   });
 }
 
@@ -592,11 +588,11 @@ async function uploadSyncFolder(
   });
 }
 
-async function startFolderSyncIfConfigured(
+async function startFolderSyncForAlias(
   alias: string,
   sync: ReturnType<typeof getSettings>["sync"],
 ): Promise<void> {
-  if (!sync.enabled || !sync.localFolder) {
+  if (!sync.localFolder) {
     return;
   }
   await startFolderSync({
@@ -686,9 +682,8 @@ async function setSyncFolders(): Promise<void> {
     const config = vscode.workspace.getConfiguration("autodl");
     await config.update("sync.localFolder", localFolder, vscode.ConfigurationTarget.Global);
     await config.update("sync.remoteFolder", remoteFolder.trim(), vscode.ConfigurationTarget.Global);
-    await config.update("sync.enabled", true, vscode.ConfigurationTarget.Global);
     void vscode.window.showInformationMessage(
-      `AutoDL folder sync enabled: ${localFolder} <-> ${remoteFolder.trim()}`,
+      `AutoDL folder sync configured: ${localFolder} <-> ${remoteFolder.trim()}`,
     );
   });
 }

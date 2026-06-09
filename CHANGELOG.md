@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3
+
+- Stopped automatically starting folder sync after Remote - SSH connect.
+- Folder sync now starts only from explicit sync or upload actions.
+
 ## 0.2.0
 
 - Added cross-platform VSIX packaging jobs for Windows, macOS, and Ubuntu.

@@ -2,7 +2,7 @@
   "name": "autodl-vscode",
   "displayName": "AutoDL Control",
   "description": "Quickly create, connect, stop, and release AutoDL Pro instances from VS Code.",
-  "version": "0.2.0",
+  "version": "0.2.3",
   "publisher": "happyan",
   "license": "MIT",
   "icon": "media/autodl-icon.png",
@@ -287,11 +287,6 @@
           "type": "boolean",
           "default": true,
           "description": "Append autodl.sshPublicKey to /root/.ssh/authorized_keys during new instance creation."
-        },
-        "autodl.sync.enabled": {
-          "type": "boolean",
-          "default": false,
-          "description": "Start folder sync automatically after opening an AutoDL instance through Remote SSH."
         },
         "autodl.sync.localFolder": {
           "type": "string",

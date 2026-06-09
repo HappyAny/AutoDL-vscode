@@ -46,7 +46,6 @@ export interface ExtensionSettings {
 }
 
 export interface FolderSyncSettings {
-  enabled: boolean;
   localFolder: string;
   remoteFolder: string;
   intervalMs: number;
@@ -64,7 +63,6 @@ export function getSettings(): ExtensionSettings {
     sshIdentityFile: config.get<string>("sshIdentityFile", "").trim(),
     injectSshPublicKeyOnCreate: config.get<boolean>("injectSshPublicKeyOnCreate", true),
     sync: {
-      enabled: config.get<boolean>("sync.enabled", false),
       localFolder: config.get<string>("sync.localFolder", "").trim(),
       remoteFolder: config.get<string>("sync.remoteFolder", "/root/autodl-sync").trim(),
       intervalMs: config.get<number>("sync.intervalSeconds", 15) * 1000,
