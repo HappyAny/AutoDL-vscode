@@ -2,6 +2,7 @@
 
 ## 0.1.21
 
+- Documented AutoDL Pro API verification requirements, stopped-instance retention, billing rules, and shutdown/release cost guidance.
 - Added a one-shot upload action for running instances.
 - Added a view-title folder button to configure local and remote sync folders.
 - Switched transfer progress to streaming byte-level accounting in the VS Code status bar.

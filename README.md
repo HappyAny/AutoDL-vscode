@@ -19,6 +19,22 @@ VS Code extension for controlling AutoDL Pro instances from the Activity Bar.
 - The VS Code Remote - SSH extension for remote windows.
 - Local OpenSSH `ssh` available on PATH.
 - An AutoDL Pro API token.
+- AutoDL requires personal real-name verification or enterprise verification before using the Container Instance Pro API.
+
+## AutoDL Account and Billing Notes
+
+Check the current AutoDL documentation before running production workloads:
+
+- The Container Instance Pro API requires personal real-name verification or enterprise verification.
+- Pro API instance creation uses pay-as-you-go billing by default. The API docs currently say other billing modes are not supported at create time through this endpoint.
+- For pay-as-you-go instances, AutoDL starts billing when the instance powers on and stops billing when it shuts down. Billing time follows instance power-on and shutdown time, not GPU utilization.
+- Stopped instances keep their data for a limited period. AutoDL documents a release rule of 15 consecutive shutdown days; after release, instance data is cleared and cannot be recovered.
+- Shutdown is not the same as saving a long-term image. Save an image first if you need to keep the system environment, and check AutoDL image storage billing before keeping many or large images.
+- Paid data disks, file storage, saved images, and other storage products may continue to generate separate charges even when the instance is shut down.
+
+Cost reminder: when you finish using an instance, shut it down first to stop compute billing, then release it when you no longer need the instance data. This avoids unnecessary spend and stale resources.
+
+References: [Container Instance Pro API](https://www.autodl.com/docs/instance_pro_api/), [instance data retention](https://www.autodl.com/docs/instance_data/), and [billing](https://www.autodl.com/docs/price/).
 
 ## Fast Install
 
