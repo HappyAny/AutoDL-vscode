@@ -14,7 +14,8 @@ permissions:
   contents: read
 
 jobs:
-  package:
+  package_windows:
+    name: Package VSIX (Windows)
     runs-on: windows-latest
 
     steps:
@@ -36,18 +37,92 @@ jobs:
       - name: Package VSIX
         run: npm run package
 
+      - name: Name Windows VSIX
+        run: node -e "require('node:fs').copyFileSync('dist/autodl-control.vsix', 'dist/autodl-control-windows.vsix')"
+
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
         with:
-          name: autodl-control-vsix
-          path: dist/autodl-control.vsix
+          name: autodl-control-vsix-windows
+          path: dist/autodl-control-windows.vsix
+          if-no-files-found: error
+          retention-days: 30
+
+  package_macos:
+    name: Package VSIX (macOS)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile
+        run: npm run compile
+
+      - name: Package VSIX
+        run: npm run package
+
+      - name: Name macOS VSIX
+        run: node -e "require('node:fs').copyFileSync('dist/autodl-control.vsix', 'dist/autodl-control-macos.vsix')"
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: autodl-control-vsix-macos
+          path: dist/autodl-control-macos.vsix
+          if-no-files-found: error
+          retention-days: 30
+
+  package_ubuntu:
+    name: Package VSIX (Ubuntu)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile
+        run: npm run compile
+
+      - name: Package VSIX
+        run: npm run package
+
+      - name: Name Ubuntu VSIX
+        run: node -e "require('node:fs').copyFileSync('dist/autodl-control.vsix', 'dist/autodl-control-ubuntu.vsix')"
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: autodl-control-vsix-ubuntu
+          path: dist/autodl-control-ubuntu.vsix
           if-no-files-found: error
           retention-days: 30
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: package
-    runs-on: windows-latest
+    needs:
+      - package_windows
+      - package_macos
+      - package_ubuntu
+    runs-on: ubuntu-latest
     permissions:
       contents: write
 
@@ -55,10 +130,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download VSIX artifact
+      - name: Download Windows VSIX artifact
         uses: actions/download-artifact@v4
         with:
-          name: autodl-control-vsix
+          name: autodl-control-vsix-windows
+          path: dist
+
+      - name: Download macOS VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: autodl-control-vsix-macos
+          path: dist
+
+      - name: Download Ubuntu VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: autodl-control-vsix-ubuntu
           path: dist
 
       - name: Create GitHub release
@@ -66,7 +153,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: >
           gh release create "${{ github.ref_name }}"
-          ".\dist\autodl-control.vsix"
+          "dist/autodl-control-windows.vsix"
+          "dist/autodl-control-macos.vsix"
+          "dist/autodl-control-ubuntu.vsix"
           --repo "${{ github.repository }}"
           --title "AutoDL Control ${{ github.ref_name }}"
           --notes "Install the VSIX from this release. See CHANGELOG.md for details."
