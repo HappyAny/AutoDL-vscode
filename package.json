@@ -6,6 +6,14 @@
   "publisher": "local",
   "license": "MIT",
   "icon": "media/autodl-icon.png",
+  "keywords": [
+    "autodl",
+    "vscode",
+    "ssh",
+    "remote",
+    "gpu",
+    "jupyter"
+  ],
   "engines": {
     "vscode": "^1.90.0"
   },

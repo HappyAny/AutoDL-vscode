@@ -2,6 +2,24 @@
 
 VS Code extension for controlling AutoDL Pro instances from the Activity Bar.
 
+## Features
+
+- List AutoDL Pro instances with readable GPU, CPU, region, status, and price details.
+- Quick-create default machine profiles or select GPU, image, storage, CUDA, and region manually.
+- Connect to running instances with VS Code Remote - SSH.
+- Open Jupyter from an instance snapshot.
+- Start, stop, release, and bulk close instances.
+- Cache GPU and image catalogs locally and refresh them on demand.
+- Configure local and remote sync folders, run background sync, or upload a folder once.
+
+## Requirements
+
+- VS Code 1.90 or newer.
+- Node.js and npm for local development.
+- The VS Code Remote - SSH extension for remote windows.
+- Local OpenSSH `ssh` available on PATH.
+- An AutoDL Pro API token.
+
 ## Fast Install
 
 From this directory:
@@ -89,6 +107,21 @@ Quick-create defaults are configured through VS Code settings under `autodl.quic
 
 Token is stored in VS Code SecretStorage. `AUTODL_TOKEN` is supported as a fallback.
 
+## Settings
+
+Important settings:
+
+- `autodl.apiBaseUrl`
+- `autodl.openRemotePath`
+- `autodl.sshPublicKey`
+- `autodl.sshIdentityFile`
+- `autodl.injectSshPublicKeyOnCreate`
+- `autodl.sync.localFolder`
+- `autodl.sync.remoteFolder`
+- `autodl.sync.intervalSeconds`
+- `autodl.sync.excludeNames`
+- `autodl.quickCreate`
+
 ## Remote SSH Behavior
 
 Quick Create and Select Server only create the instance and refresh the list. They do not automatically connect, because the instance may not be fully ready yet.
@@ -105,6 +138,10 @@ Managed `autodl-*` SSH hosts use a separate `~/.ssh/autodl-vscode-known_hosts` f
 The VS Code Remote - SSH extension should be installed for the remote window to open cleanly.
 
 VS Code Remote SSH does not provide a reliable extension API for typing the password into its prompt. For hands-free login, run `AutoDL: Set SSH Public Key` before creating new instances. The extension injects that public key into `/root/.ssh/authorized_keys` through the create start command and writes the matching private key path into the managed SSH config.
+
+## Repository Safety
+
+This repository intentionally excludes build output, packaged VSIX files, npm cache files, local config, and `.env*` files. Do not commit AutoDL tokens, root passwords, SSH private keys, generated catalog caches, or personal SSH config contents.
 
 ## Empty State
 

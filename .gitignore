@@ -4,6 +4,11 @@ out/
 dist/
 *.vsix
 .vscode-test/
+.vsce/
+coverage/
+*.log
+*.tsbuildinfo
+.DS_Store
 .env
 .env.*
 config.json

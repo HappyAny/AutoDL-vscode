@@ -9,4 +9,5 @@ node_modules/**
 out/**/*.map
 *.vsix
 .git/**
+.github/**
 .gitignore
