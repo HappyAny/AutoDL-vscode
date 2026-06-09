@@ -1,7 +1,9 @@
 import * as cp from "node:child_process";
+import { createReadStream, createWriteStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pipeline } from "node:stream/promises";
 
 import * as vscode from "vscode";
 
@@ -162,13 +164,13 @@ async function reconcile(
     const previous = session.previous.get(relativePath);
 
     if (localRecord && !remoteRecord) {
-      await uploadFile(session, relativePath, relativePath);
+      await uploadFile(session, relativePath, relativePath, localRecord.size);
       counters.uploads += 1;
       continue;
     }
 
     if (!localRecord && remoteRecord) {
-      await downloadFile(session, relativePath, relativePath);
+      await downloadFile(session, relativePath, relativePath, remoteRecord.size);
       counters.downloads += 1;
       continue;
     }
@@ -183,9 +185,9 @@ async function reconcile(
         localRecord.mtimeMs >= remoteRecord.mtimeMs ? "local" : "remote",
       );
       if (localRecord.mtimeMs >= remoteRecord.mtimeMs) {
-        await uploadFile(session, relativePath, conflictPath);
+        await uploadFile(session, relativePath, conflictPath, localRecord.size);
       } else {
-        await downloadFile(session, relativePath, conflictPath);
+        await downloadFile(session, relativePath, conflictPath, remoteRecord.size);
       }
       counters.conflicts += 1;
       continue;
@@ -195,20 +197,30 @@ async function reconcile(
     const remoteChanged = !previous.remote || !sameRecord(remoteRecord, previous.remote);
 
     if (localChanged && !remoteChanged) {
-      await uploadFile(session, relativePath, relativePath);
+      await uploadFile(session, relativePath, relativePath, localRecord.size);
       counters.uploads += 1;
       continue;
     }
 
     if (!localChanged && remoteChanged) {
-      await downloadFile(session, relativePath, relativePath);
+      await downloadFile(session, relativePath, relativePath, remoteRecord.size);
       counters.downloads += 1;
       continue;
     }
 
     if (localChanged && remoteChanged) {
-      await uploadFile(session, relativePath, conflictRelativePath(relativePath, "local"));
-      await downloadFile(session, relativePath, conflictRelativePath(relativePath, "remote"));
+      await uploadFile(
+        session,
+        relativePath,
+        conflictRelativePath(relativePath, "local"),
+        localRecord.size,
+      );
+      await downloadFile(
+        session,
+        relativePath,
+        conflictRelativePath(relativePath, "remote"),
+        remoteRecord.size,
+      );
       counters.conflicts += 1;
     }
   }
@@ -220,6 +232,7 @@ async function uploadFile(
   session: SyncSession,
   sourceRelativePath: string,
   targetRelativePath: string,
+  totalBytes: number,
 ): Promise<void> {
   updateStatus(
     `$(cloud-upload) AutoDL Sync: ${shortPath(sourceRelativePath)}`,
@@ -235,17 +248,14 @@ async function uploadFile(
     `mkdir -p ${quoteRemotePath(posixDirname(remotePath))}`,
     30_000,
   );
-  await runCommand(
-    "scp",
-    ["-q", "-o", "BatchMode=yes", localPath, `${session.alias}:${quoteRemotePath(remotePath)}`],
-    10 * 60_000,
-  );
+  await streamUpload(session, localPath, remotePath, sourceRelativePath, totalBytes);
 }
 
 async function downloadFile(
   session: SyncSession,
   sourceRelativePath: string,
   targetRelativePath: string,
+  totalBytes: number,
 ): Promise<void> {
   updateStatus(
     `$(cloud-download) AutoDL Sync: ${shortPath(sourceRelativePath)}`,
@@ -257,11 +267,92 @@ async function downloadFile(
   const localPath = localFilePath(session.localFolder, targetRelativePath);
   await fs.mkdir(path.dirname(localPath), { recursive: true });
   const remotePath = remoteFilePath(session.remoteFolder, sourceRelativePath);
-  await runCommand(
-    "scp",
-    ["-q", "-o", "BatchMode=yes", `${session.alias}:${quoteRemotePath(remotePath)}`, localPath],
-    10 * 60_000,
+  await streamDownload(session, remotePath, localPath, sourceRelativePath, totalBytes);
+}
+
+async function streamUpload(
+  session: SyncSession,
+  localPath: string,
+  remotePath: string,
+  relativePath: string,
+  totalBytes: number,
+): Promise<void> {
+  const tmpRemotePath = `${remotePath}.autodl-sync-${process.pid}-${Date.now()}.tmp`;
+  const command = [
+    `cat > ${quoteRemotePath(tmpRemotePath)}`,
+    `mv ${quoteRemotePath(tmpRemotePath)} ${quoteRemotePath(remotePath)}`,
+  ].join(" && ");
+  const child = cp.spawn("ssh", ["-o", "BatchMode=yes", session.alias, command], {
+    windowsHide: true,
+  });
+  child.stdout?.resume();
+
+  const stderr = collectStderr(child);
+  const updateProgress = transferProgress(session, "upload", relativePath, totalBytes);
+  const source = createReadStream(localPath);
+  let transferred = 0;
+  source.on("data", (chunk: Buffer | string) => {
+    transferred += Buffer.byteLength(chunk);
+    updateProgress(transferred);
+  });
+
+  try {
+    updateProgress(0, true);
+    await Promise.all([
+      pipeline(source, child.stdin),
+      waitForChild(child, stderr, `upload ${relativePath}`),
+    ]);
+    updateProgress(totalBytes, true);
+    session.output.appendLine(
+      `Folder sync ${session.alias}: upload complete ${relativePath} (${formatBytes(totalBytes)})`,
+    );
+  } catch (error) {
+    child.kill();
+    throw error;
+  }
+}
+
+async function streamDownload(
+  session: SyncSession,
+  remotePath: string,
+  localPath: string,
+  relativePath: string,
+  totalBytes: number,
+): Promise<void> {
+  const tmpLocalPath = `${localPath}.autodl-sync-${process.pid}-${Date.now()}.tmp`;
+  const child = cp.spawn(
+    "ssh",
+    ["-o", "BatchMode=yes", session.alias, `cat ${quoteRemotePath(remotePath)}`],
+    {
+      windowsHide: true,
+    },
   );
+
+  const stderr = collectStderr(child);
+  const updateProgress = transferProgress(session, "download", relativePath, totalBytes);
+  const target = createWriteStream(tmpLocalPath);
+  let transferred = 0;
+  child.stdout.on("data", (chunk: Buffer | string) => {
+    transferred += Buffer.byteLength(chunk);
+    updateProgress(transferred);
+  });
+
+  try {
+    updateProgress(0, true);
+    await Promise.all([
+      pipeline(child.stdout, target),
+      waitForChild(child, stderr, `download ${relativePath}`),
+    ]);
+    await fs.rename(tmpLocalPath, localPath);
+    updateProgress(totalBytes, true);
+    session.output.appendLine(
+      `Folder sync ${session.alias}: download complete ${relativePath} (${formatBytes(totalBytes)})`,
+    );
+  } catch (error) {
+    child.kill();
+    await fs.rm(tmpLocalPath, { force: true });
+    throw error;
+  }
 }
 
 async function scanLocal(
@@ -385,6 +476,38 @@ function runCommand(
   });
 }
 
+function collectStderr(child: cp.ChildProcess): () => string {
+  let stderr = "";
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    stderr += chunk.toString("utf8");
+    if (stderr.length > 4_000) {
+      stderr = stderr.slice(-4_000);
+    }
+  });
+  return () => stderr.trim();
+}
+
+function waitForChild(
+  child: cp.ChildProcess,
+  stderr: () => string,
+  label: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        new Error(
+          `${label} failed: ${stderr() || `exit code ${code ?? "unknown"}${signal ? `, signal ${signal}` : ""}`}`,
+        ),
+      );
+    });
+  });
+}
+
 async function ensureExistingDirectory(localFolder: string): Promise<void> {
   const stat = await fs.stat(localFolder);
   if (!stat.isDirectory()) {
@@ -480,4 +603,48 @@ function ensureStatusBarItem(): vscode.StatusBarItem {
 function shortPath(relativePath: string): string {
   const value = relativePath.length <= 28 ? relativePath : `...${relativePath.slice(-25)}`;
   return value.replace(/\s+/g, " ");
+}
+
+function transferProgress(
+  session: SyncSession,
+  direction: "upload" | "download",
+  relativePath: string,
+  totalBytes: number,
+): (transferredBytes: number, force?: boolean) => void {
+  let lastUpdate = 0;
+  const icon = direction === "upload" ? "$(cloud-upload)" : "$(cloud-download)";
+  const verb = direction === "upload" ? "Upload" : "Download";
+  return (transferredBytes: number, force = false) => {
+    const now = Date.now();
+    if (!force && now - lastUpdate < 250 && transferredBytes < totalBytes) {
+      return;
+    }
+    lastUpdate = now;
+    const percent =
+      totalBytes > 0 ? Math.min(100, Math.floor((transferredBytes / totalBytes) * 100)) : 100;
+    const text = `${icon} ${percent}% ${formatBytes(transferredBytes)}/${formatBytes(totalBytes)}`;
+    updateStatus(
+      text,
+      [
+        `${session.alias}`,
+        `${verb}: ${relativePath}`,
+        `${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)} (${percent}%)`,
+      ].join("\n"),
+    );
+  };
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0 B";
+  }
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const digits = size >= 10 || unitIndex === 0 ? 1 : 2;
+  return `${size.toFixed(digits)} ${units[unitIndex]}`;
 }

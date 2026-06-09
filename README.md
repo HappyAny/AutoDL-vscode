@@ -66,7 +66,7 @@ Folder sync uses local `ssh` and `scp` with `BatchMode=yes`, so it requires key-
 
 Progress is visible in two places:
 
-- The VS Code status bar shows scanning and current transfer progress. Click it to stop active sync sessions.
+- The VS Code status bar shows scanning and byte-level transfer progress, including percentage and transferred size. Click it to stop active sync sessions.
 - The AutoDL output panel logs each uploaded, downloaded, or conflict-copied file plus the per-cycle summary.
 
 ## Defaults
