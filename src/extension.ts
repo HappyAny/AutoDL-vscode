@@ -42,6 +42,7 @@ import {
   jupyterUrl,
   removeAllManagedSshHosts,
   removeManagedSshHost,
+  removeRecentlyOpenedRemoteSshEntries,
   sshAlias,
   writeManagedSshHost,
 } from "./ssh";
@@ -57,6 +58,8 @@ import { AutoDLInstance, CreateInstancePayload, QuickCreateBuildResult } from ".
 let output: vscode.OutputChannel;
 let provider: InstancesProvider;
 let autoRefreshTimer: ReturnType<typeof setInterval> | undefined;
+const recentRemotePathsKey = "autodl.recentRemotePathsByInstance";
+type RecentRemotePathsByInstance = Record<string, string[]>;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   output = vscode.window.createOutputChannel("AutoDL");
@@ -313,6 +316,13 @@ async function connectInstance(
       output,
       settings.sshIdentityFile,
     );
+    try {
+      await rememberRecentRemotePath(context, uuid, settings.openRemotePath);
+    } catch (error) {
+      output.appendLine(
+        `Warning: failed to remember VS Code recent path for ${uuid}: ${formatError(error)}`,
+      );
+    }
     await startFolderSyncIfConfigured(alias, settings.sync);
   });
 }
@@ -423,8 +433,7 @@ async function releaseInstance(
       );
     }
     await client.release(uuid);
-    stopFolderSync(sshAlias(uuid));
-    await removeManagedSshHost(uuid);
+    await cleanupReleasedInstance(context, uuid, [getSettings().openRemotePath]);
     provider.refresh();
     void vscode.window.showInformationMessage(`AutoDL instance released: ${uuid}`);
   });
@@ -452,6 +461,7 @@ async function quickCloseAll(context: vscode.ExtensionContext): Promise<void> {
         cancellable: false,
       },
       async (progress) => {
+        const settings = getSettings();
         const instances = (await listAllInstances(client)).filter(isActiveInstance);
         output.show(true);
         output.appendLine("");
@@ -474,8 +484,7 @@ async function quickCloseAll(context: vscode.ExtensionContext): Promise<void> {
           }
           output.appendLine(`Releasing ${uuid}`);
           await client.release(uuid);
-          stopFolderSync(sshAlias(uuid));
-          await removeManagedSshHost(uuid);
+          await cleanupReleasedInstance(context, uuid, [settings.openRemotePath]);
         }
       },
     );
@@ -483,6 +492,38 @@ async function quickCloseAll(context: vscode.ExtensionContext): Promise<void> {
     provider.refresh();
     void vscode.window.showInformationMessage("AutoDL quick close completed.");
   });
+}
+
+async function cleanupReleasedInstance(
+  context: vscode.ExtensionContext,
+  instanceUuid: string,
+  remotePaths: string[],
+): Promise<void> {
+  stopFolderSync(sshAlias(instanceUuid));
+  await runBestEffortCleanup(`remove SSH config for ${instanceUuid}`, () =>
+    removeManagedSshHost(instanceUuid),
+  );
+  await runBestEffortCleanup(`remove VS Code recent entries for ${instanceUuid}`, () =>
+    removeRecentlyOpenedRemoteSshEntries(
+      instanceUuid,
+      [...recentRemotePathsForInstance(context, instanceUuid), ...remotePaths],
+      output,
+    ),
+  );
+  await runBestEffortCleanup(`clear recent path state for ${instanceUuid}`, () =>
+    forgetRecentRemotePathsForInstance(context, instanceUuid),
+  );
+}
+
+async function runBestEffortCleanup(
+  label: string,
+  action: () => Promise<unknown>,
+): Promise<void> {
+  try {
+    await action();
+  } catch (error) {
+    output.appendLine(`Warning: failed to ${label}: ${formatError(error)}`);
+  }
 }
 
 async function startFolderSyncForInstance(
@@ -566,6 +607,56 @@ async function startFolderSyncIfConfigured(
     excludeNames: sync.excludeNames,
     output,
   });
+}
+
+async function rememberRecentRemotePath(
+  context: vscode.ExtensionContext,
+  instanceUuid: string,
+  remotePath: string,
+): Promise<void> {
+  const normalized = normalizeRemotePath(remotePath);
+  const pathsByInstance = context.globalState.get<RecentRemotePathsByInstance>(
+    recentRemotePathsKey,
+    {},
+  );
+  const paths = new Set(pathsByInstance[instanceUuid] || []);
+  paths.add(normalized);
+  await context.globalState.update(recentRemotePathsKey, {
+    ...pathsByInstance,
+    [instanceUuid]: [...paths],
+  });
+}
+
+function recentRemotePathsForInstance(
+  context: vscode.ExtensionContext,
+  instanceUuid: string,
+): string[] {
+  const pathsByInstance = context.globalState.get<RecentRemotePathsByInstance>(
+    recentRemotePathsKey,
+    {},
+  );
+  return pathsByInstance[instanceUuid] || [];
+}
+
+async function forgetRecentRemotePathsForInstance(
+  context: vscode.ExtensionContext,
+  instanceUuid: string,
+): Promise<void> {
+  const pathsByInstance = context.globalState.get<RecentRemotePathsByInstance>(
+    recentRemotePathsKey,
+    {},
+  );
+  if (!pathsByInstance[instanceUuid]) {
+    return;
+  }
+  const next = { ...pathsByInstance };
+  delete next[instanceUuid];
+  await context.globalState.update(recentRemotePathsKey, next);
+}
+
+function normalizeRemotePath(remotePath: string): string {
+  const trimmed = remotePath.trim() || "/root";
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
 }
 
 async function setSyncFolders(): Promise<void> {
@@ -921,7 +1012,7 @@ async function runSafely(action: () => Promise<void>): Promise<void> {
 }
 
 function reportErrorToOutput(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = formatError(error);
   output.show(true);
   output.appendLine("");
   output.appendLine(`Error: ${message}`);
@@ -940,6 +1031,15 @@ function reportErrorToOutput(error: unknown): string {
         "Hint: check the endpoint payload above. For quick-create, common causes are cuda_min/cuda_v_from, image_uuid, gpu_spec_uuid, gpu_amount, and system_disk.",
       );
     }
+    if (error.code === "NetworkError") {
+      output.appendLine(
+        "Hint: this is a network/TLS failure before AutoDL returned a response. Check VPN/proxy, VS Code http.proxy settings, DNS, firewall, and autodl.apiBaseUrl.",
+      );
+    }
   }
   return message;
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

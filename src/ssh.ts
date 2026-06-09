@@ -59,9 +59,7 @@ export async function connectWithRemoteSsh(
   identityFile?: string,
 ): Promise<string> {
   const alias = await writeManagedSshHost(instanceUuid, snapshot, identityFile);
-  const remoteUri = vscode.Uri.parse(
-    `vscode-remote://ssh-remote+${alias}${encodeRemotePath(remotePath)}`,
-  );
+  const remoteUri = remoteSshUri(alias, remotePath);
 
   output.show(true);
   output.appendLine("");
@@ -87,6 +85,33 @@ export async function connectWithRemoteSsh(
     forceNewWindow: true,
   });
   return alias;
+}
+
+export async function removeRecentlyOpenedRemoteSshEntries(
+  instanceUuid: string,
+  remotePaths: string | readonly string[],
+  output?: vscode.OutputChannel,
+): Promise<void> {
+  const alias = sshAlias(instanceUuid);
+  const requestedPaths = typeof remotePaths === "string" ? [remotePaths] : remotePaths;
+  const pathCandidates = [
+    ...new Set(
+      [...requestedPaths, "/root"].map((value) => value.trim()).filter(Boolean),
+    ),
+  ];
+
+  for (const pathCandidate of pathCandidates) {
+    const remoteUri = remoteSshUri(alias, pathCandidate);
+    try {
+      await vscode.commands.executeCommand("vscode.removeFromRecentlyOpened", remoteUri);
+    } catch (error) {
+      output?.appendLine(
+        `Warning: failed to remove VS Code recent entry ${remoteUri.toString()}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
 }
 
 export async function writeManagedSshHost(
@@ -212,6 +237,12 @@ function encodeRemotePath(remotePath: string): string {
   const value = remotePath.trim() || "/root";
   const normalized = value.startsWith("/") ? value : `/${value}`;
   return encodeURI(normalized);
+}
+
+function remoteSshUri(alias: string, remotePath: string): vscode.Uri {
+  return vscode.Uri.parse(
+    `vscode-remote://ssh-remote+${alias}${encodeRemotePath(remotePath)}`,
+  );
 }
 
 function sanitizeConfigValue(value: string | undefined, fieldName: string): string {

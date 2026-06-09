@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.23
+
+- Added short retries and clearer diagnostics for transient AutoDL network/TLS failures.
+
+## 0.1.22
+
+- Removed matching VS Code Open Recent Remote - SSH entries after releasing AutoDL instances.
+
 ## 0.1.21
 
 - Added local UI extension placement for cross-platform Remote - SSH behavior.

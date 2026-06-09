@@ -11,6 +11,17 @@ import {
   CreateInstancePayload,
 } from "./types";
 
+const networkRetryAttempts = 3;
+const retryBaseDelayMs = 500;
+const retryableNetworkCodes = new Set([
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+]);
+
 export class AutoDLApiError extends Error {
   constructor(
     message: string,
@@ -95,17 +106,45 @@ export class AutoDLClient {
     payload: object,
   ): Promise<AutoDLResponse<T>> {
     try {
-      return await this.sendRequest<T>(method, path, payload, "body");
+      return await this.sendRequestWithRetry<T>(method, path, payload, "body");
     } catch (error) {
       if (
         method === "GET" &&
         error instanceof AutoDLApiError &&
         error.code === "RequestParameterIsWrong"
       ) {
-        return this.sendRequest<T>(method, path, payload, "query");
+        return this.sendRequestWithRetry<T>(method, path, payload, "query");
       }
       throw error;
     }
+  }
+
+  private async sendRequestWithRetry<T>(
+    method: "GET" | "POST",
+    path: string,
+    payload: object,
+    payloadMode: "body" | "query",
+  ): Promise<AutoDLResponse<T>> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= networkRetryAttempts; attempt += 1) {
+      try {
+        return await this.sendRequest<T>(method, path, payload, payloadMode);
+      } catch (error) {
+        lastError = error;
+        if (!isRetryableNetworkError(error) || attempt === networkRetryAttempts) {
+          throw wrapNetworkError(error, method, path, payload, payloadMode, attempt);
+        }
+        await sleep(retryBaseDelayMs * attempt);
+      }
+    }
+    throw wrapNetworkError(
+      lastError,
+      method,
+      path,
+      payload,
+      payloadMode,
+      networkRetryAttempts,
+    );
   }
 
   private async sendRequest<T>(
@@ -190,7 +229,9 @@ export class AutoDLClient {
       );
 
       req.on("timeout", () => {
-        req.destroy(new AutoDLApiError(`Request timed out after ${this.timeoutMs}ms`));
+        const error = new Error(`Request timed out after ${this.timeoutMs}ms`);
+        (error as NodeJS.ErrnoException).code = "ETIMEDOUT";
+        req.destroy(error);
       });
       req.on("error", reject);
       if (body) {
@@ -356,6 +397,53 @@ export function isAlreadyStoppedError(error: unknown): boolean {
     error.code === "BadRequest" &&
     error.message.includes("已关机")
   );
+}
+
+function isRetryableNetworkError(error: unknown): boolean {
+  if (error instanceof AutoDLApiError) {
+    return error.code === "NetworkError";
+  }
+  const code = errorCode(error);
+  const message = errorMessage(error);
+  return (
+    retryableNetworkCodes.has(code) ||
+    message.includes("Client network socket disconnected before secure TLS connection was established") ||
+    message.includes("socket hang up")
+  );
+}
+
+function wrapNetworkError(
+  error: unknown,
+  method: "GET" | "POST",
+  path: string,
+  payload: object,
+  payloadMode: "body" | "query",
+  attempts: number,
+): Error {
+  if (error instanceof AutoDLApiError) {
+    return error;
+  }
+  const code = errorCode(error);
+  const codePrefix = code ? `${code}: ` : "";
+  return new AutoDLApiError(
+    `Network error calling AutoDL ${method} ${path} (${payloadMode}) after ${attempts} attempt(s): ${codePrefix}${errorMessage(error)}`,
+    "NetworkError",
+    undefined,
+    `${method} ${path}`,
+    payload,
+  );
+}
+
+function errorCode(error: unknown): string {
+  if (!error || typeof error !== "object") {
+    return "";
+  }
+  const code = (error as NodeJS.ErrnoException).code;
+  return typeof code === "string" ? code : "";
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function sleep(ms: number): Promise<void> {

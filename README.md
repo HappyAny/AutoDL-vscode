@@ -11,6 +11,7 @@ VS Code extension for controlling AutoDL Pro instances from the Activity Bar.
 - Connect to running instances with VS Code Remote - SSH.
 - Open Jupyter from an instance snapshot.
 - Start, stop, release, and bulk close instances.
+- Remove matching VS Code Open Recent Remote - SSH entries after releasing instances.
 - Cache GPU and image catalogs locally and refresh them on demand.
 - Configure local and remote sync folders, run background sync, or upload a folder once.
 
@@ -91,7 +92,7 @@ Instance actions in the tree:
 - Running instances: Connect with Remote SSH, Open Jupyter, Upload Sync Folder, Shutdown Instance, Release Instance
 - Shutdown instances: Turn On Instance, Release Instance
 
-When an instance is released through the extension, its managed `Host autodl-<instance>` SSH config block is removed. Use `AutoDL: Clean SSH Config` to remove all stale AutoDL-managed blocks.
+When an instance is released through the extension, its managed `Host autodl-<instance>` SSH config block and matching VS Code Open Recent Remote - SSH entry are removed. Use `AutoDL: Clean SSH Config` to remove all stale AutoDL-managed blocks.
 
 The GPU and image catalogs are cached in VS Code global storage. Use the cloud-download icon in the AutoDL view title to refresh them from the AutoDL API docs and your private image list.
 
@@ -188,8 +189,8 @@ The CI workflow builds the VSIX on every push, pull request, or manual workflow 
 To publish a GitHub Release with the compiled VSIX attached, push a version tag:
 
 ```powershell
-git tag v0.1.21
-git push origin v0.1.21
+git tag v0.1.23
+git push origin v0.1.23
 ```
 
 The release job creates a GitHub Release for the tag and uploads `dist/autodl-control.vsix`.

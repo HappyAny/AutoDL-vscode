@@ -11,6 +11,7 @@ AutoDL Control 是一个 VS Code 扩展，用于在侧边栏里快速管理 Auto
 - 通过 VS Code Remote - SSH 连接运行中的实例。
 - 从实例快照打开 Jupyter。
 - 启动、关机、释放实例，也可以一键关闭并释放活跃实例。
+- 释放实例后，自动清理对应的 VS Code 最近打开 Remote - SSH 记录。
 - 缓存 GPU 和镜像列表，并支持手动刷新。
 - 配置本地和远端同步目录，支持后台同步，也支持一次性上传本地目录。
 
@@ -91,7 +92,7 @@ code --install-extension ./dist/autodl-control.vsix --force
 - 运行中实例：连接 Remote SSH、打开 Jupyter、上传同步目录、关机、释放。
 - 已关机实例：开机、释放。
 
-通过扩展释放实例时，扩展会删除对应的 `Host autodl-<instance>` 托管 SSH 配置块。也可以使用 `AutoDL: Clean SSH Config` 清理所有陈旧的 AutoDL 托管配置块。
+通过扩展释放实例时，扩展会删除对应的 `Host autodl-<instance>` 托管 SSH 配置块，并清理匹配的 VS Code 最近打开 Remote - SSH 记录。也可以使用 `AutoDL: Clean SSH Config` 清理所有陈旧的 AutoDL 托管配置块。
 
 GPU 和镜像列表会缓存在 VS Code global storage 中。点击 AutoDL 视图标题栏里的 cloud-download 图标，可以从 AutoDL API 文档和你的私有镜像列表刷新缓存。
 
@@ -184,8 +185,8 @@ CI 会在每次 push、pull request 或手动运行时构建 VSIX。需要测试
 发布 GitHub Release 并附带编译好的 VSIX 时，推送版本 tag：
 
 ```bash
-git tag v0.1.21
-git push origin v0.1.21
+git tag v0.1.23
+git push origin v0.1.23
 ```
 
 Release job 会为该 tag 创建 GitHub Release，并上传 `dist/autodl-control.vsix`。
