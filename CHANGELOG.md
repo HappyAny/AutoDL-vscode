@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+- Added cross-platform VSIX packaging jobs for Windows, macOS, and Ubuntu.
+- Improved AutoDL network/TLS retry diagnostics.
+- Fixed cross-platform Remote - SSH runtime placement behavior.
+
 ## 0.1.23
 
 - Added short retries and clearer diagnostics for transient AutoDL network/TLS failures.
