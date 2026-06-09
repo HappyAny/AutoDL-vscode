@@ -189,8 +189,8 @@ The CI workflow builds the VSIX on every push, pull request, or manual workflow 
 To publish a GitHub Release with the compiled VSIX attached, push a version tag:
 
 ```powershell
-git tag v0.2.3
-git push origin v0.2.3
+git tag v0.2.4
+git push origin v0.2.4
 ```
 
 The release job creates a GitHub Release for the tag and uploads `dist/autodl-control.vsix`.

@@ -66,6 +66,7 @@ interface SyncSession extends SyncContext {
   previous: Map<string, SyncedRecord>;
   running: boolean;
   disposed: boolean;
+  activeChildren: Set<cp.ChildProcess>;
   timer: ReturnType<typeof setInterval>;
 }
 
@@ -89,6 +90,7 @@ export async function startFolderSync(options: FolderSyncStartOptions): Promise<
     previous: new Map(),
     running: false,
     disposed: false,
+    activeChildren: new Set(),
     timer: setInterval(() => {
       void runSyncCycle(session);
     }, Math.max(options.intervalMs, 3_000)),
@@ -162,6 +164,13 @@ export function stopFolderSync(alias: string): boolean {
   session.disposed = true;
   clearInterval(session.timer);
   sessions.delete(alias);
+  for (const child of [...session.activeChildren]) {
+    try {
+      child.kill();
+    } catch {
+      // Best-effort cancellation for in-flight ssh commands.
+    }
+  }
   session.output.appendLine(`Folder sync stopped: ${alias}`);
   updateIdleStatus();
   return true;
@@ -188,12 +197,21 @@ async function runSyncCycle(session: SyncSession): Promise<void> {
   session.running = true;
   try {
     updateStatus(`$(sync~spin) AutoDL Sync: scanning ${session.alias}`);
-    await runSsh(session.alias, `mkdir -p ${quoteRemotePath(session.remoteFolder)}`, 30_000);
-    const local = await scanLocal(session.localFolder, session.excludeNames);
-    const remote = await scanRemote(session.alias, session.remoteFolder, session.excludeNames);
+    await runSsh(session, `mkdir -p ${quoteRemotePath(session.remoteFolder)}`, 30_000);
+    throwIfDisposed(session);
+    const local = await scanLocal(session.localFolder, session.excludeNames, () => session.disposed);
+    throwIfDisposed(session);
+    const remote = await scanRemote(session, session.remoteFolder, session.excludeNames);
+    throwIfDisposed(session);
     const counters = await reconcile(session, local, remote);
-    const finalLocal = await scanLocal(session.localFolder, session.excludeNames);
-    const finalRemote = await scanRemote(session.alias, session.remoteFolder, session.excludeNames);
+    throwIfDisposed(session);
+    const finalLocal = await scanLocal(
+      session.localFolder,
+      session.excludeNames,
+      () => session.disposed,
+    );
+    throwIfDisposed(session);
+    const finalRemote = await scanRemote(session, session.remoteFolder, session.excludeNames);
     session.previous = buildSyncedState(finalLocal, finalRemote);
     if (counters.uploads || counters.downloads || counters.conflicts) {
       session.output.appendLine(
@@ -201,6 +219,9 @@ async function runSyncCycle(session: SyncSession): Promise<void> {
       );
     }
   } catch (error) {
+    if (session.disposed) {
+      return;
+    }
     session.output.show(true);
     session.output.appendLine(
       `Folder sync error (${session.alias}): ${error instanceof Error ? error.message : String(error)}`,
@@ -222,6 +243,7 @@ async function reconcile(
   let checked = 0;
 
   for (const relativePath of [...allRelativePaths].sort()) {
+    throwIfDisposed(session);
     checked += 1;
     updateStatus(
       `$(sync~spin) AutoDL Sync: ${checked}/${total}`,
@@ -362,6 +384,7 @@ async function streamUpload(
   const child = cp.spawn("ssh", sshArgs(session.alias, command), {
     windowsHide: true,
   });
+  trackChild(session, child);
   child.stdout?.resume();
 
   const stderr = collectStderr(child);
@@ -400,6 +423,7 @@ async function streamDownload(
       windowsHide: true,
     },
   );
+  trackChild(session, child);
 
   const stderr = collectStderr(child);
   const updateProgress = transferProgress(session, "download", relativePath, totalBytes);
@@ -427,9 +451,10 @@ async function streamDownload(
 async function scanLocal(
   localFolder: string,
   excludeNames: Set<string>,
+  shouldCancel?: () => boolean,
 ): Promise<Map<string, FileRecord>> {
   const files = new Map<string, FileRecord>();
-  await scanLocalDirectory(localFolder, "", excludeNames, files);
+  await scanLocalDirectory(localFolder, "", excludeNames, files, shouldCancel);
   return files;
 }
 
@@ -438,10 +463,17 @@ async function scanLocalDirectory(
   relativeDirectory: string,
   excludeNames: Set<string>,
   files: Map<string, FileRecord>,
+  shouldCancel?: () => boolean,
 ): Promise<void> {
+  if (shouldCancel?.()) {
+    throw new Error("Folder sync stopped.");
+  }
   const directory = relativeDirectory ? path.join(root, relativeDirectory) : root;
   const entries = await fs.readdir(directory, { withFileTypes: true });
   for (const entry of entries) {
+    if (shouldCancel?.()) {
+      throw new Error("Folder sync stopped.");
+    }
     if (excludeNames.has(entry.name)) {
       continue;
     }
@@ -450,7 +482,7 @@ async function scanLocalDirectory(
       : entry.name;
     const absolutePath = path.join(root, ...relativePath.split("/"));
     if (entry.isDirectory()) {
-      await scanLocalDirectory(root, relativePath, excludeNames, files);
+      await scanLocalDirectory(root, relativePath, excludeNames, files, shouldCancel);
       continue;
     }
     if (!entry.isFile()) {
@@ -465,13 +497,13 @@ async function scanLocalDirectory(
 }
 
 async function scanRemote(
-  alias: string,
+  context: string | SyncContext,
   remoteFolder: string,
   excludeNames: Set<string>,
 ): Promise<Map<string, FileRecord>> {
   const prune = remoteFindPrune(excludeNames);
   const command = `cd ${quoteRemotePath(remoteFolder)} && find . ${prune} -type f -printf '%P\t%T@\t%s\n'`;
-  const { stdout } = await runSsh(alias, command, 60_000);
+  const { stdout } = await runSsh(context, command, 60_000);
   const files = new Map<string, FileRecord>();
   for (const line of stdout.split(/\r?\n/)) {
     if (!line.trim()) {
@@ -513,11 +545,17 @@ function buildSyncedState(
 }
 
 async function runSsh(
-  alias: string,
+  context: string | SyncContext,
   command: string,
   timeoutMs: number,
 ): Promise<{ stdout: string; stderr: string }> {
-  return runCommand("ssh", sshArgs(alias, command), timeoutMs);
+  const alias = typeof context === "string" ? context : context.alias;
+  return runCommand(
+    "ssh",
+    sshArgs(alias, command),
+    timeoutMs,
+    typeof context === "string" ? undefined : context,
+  );
 }
 
 function sshArgs(alias: string, command: string): string[] {
@@ -545,9 +583,10 @@ function runCommand(
   command: string,
   args: string[],
   timeoutMs: number,
+  context?: SyncContext,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    cp.execFile(
+    const child = cp.execFile(
       command,
       args,
       {
@@ -563,7 +602,31 @@ function runCommand(
         resolve({ stdout, stderr });
       },
     );
+    trackChild(context, child);
   });
+}
+
+function throwIfDisposed(session: SyncSession): void {
+  if (session.disposed) {
+    throw new Error("Folder sync stopped.");
+  }
+}
+
+function trackChild(context: SyncContext | undefined, child: cp.ChildProcess): void {
+  if (!isSyncSession(context)) {
+    return;
+  }
+  context.activeChildren.add(child);
+  const untrack = () => context.activeChildren.delete(child);
+  child.once("close", untrack);
+  child.once("error", untrack);
+  if (context.disposed) {
+    child.kill();
+  }
+}
+
+function isSyncSession(context: SyncContext | undefined): context is SyncSession {
+  return Boolean(context && "activeChildren" in context);
 }
 
 function collectStderr(child: cp.ChildProcess): () => string {

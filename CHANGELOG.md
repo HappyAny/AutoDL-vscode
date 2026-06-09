@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.4
+
+- Stopped the transient-instance auto-refresh timer after AutoDL list/network errors.
+- Cancelled in-flight SSH sync commands when folder sync is stopped.
+
 ## 0.2.3
 
 - Stopped automatically starting folder sync after Remote - SSH connect.

@@ -185,8 +185,8 @@ CI 会在每次 push、pull request 或手动运行时构建 VSIX。需要测试
 发布 GitHub Release 并附带编译好的 VSIX 时，推送版本 tag：
 
 ```bash
-git tag v0.2.3
-git push origin v0.2.3
+git tag v0.2.4
+git push origin v0.2.4
 ```
 
 Release job 会为该 tag 创建 GitHub Release，并上传 `dist/autodl-control.vsix`。

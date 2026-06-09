@@ -71,12 +71,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return { hasToken: false, instances: [] };
     }
     const client = new AutoDLClient(token, getSettings().apiBaseUrl);
-    const instances = await enrichInstancesWithSnapshots(client, await listAllInstances(client));
-    syncAutoRefresh(instances);
-    return {
-      hasToken: true,
-      instances,
-    };
+    try {
+      const instances = await enrichInstancesWithSnapshots(client, await listAllInstances(client));
+      syncAutoRefresh(instances);
+      return {
+        hasToken: true,
+        instances,
+      };
+    } catch (error) {
+      stopAutoRefresh();
+      throw error;
+    }
   }, reportErrorToOutput);
 
   context.subscriptions.push(output);
