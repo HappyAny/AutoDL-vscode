@@ -148,6 +148,26 @@ jobs:
           name: autodl-control-vsix-ubuntu
           path: dist
 
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v version="$version" '
+            $0 == "## " version { in_section=1; next }
+            in_section && /^## / { exit }
+            in_section { print }
+          ' CHANGELOG.md > CHANGELOG_SECTION.md
+          {
+            echo "Install the VSIX matching your platform from this release."
+            echo
+            if grep -q '[^[:space:]]' CHANGELOG_SECTION.md; then
+              echo "Changes:"
+              cat CHANGELOG_SECTION.md
+            else
+              echo "See CHANGELOG.md for details."
+            fi
+          } > RELEASE_NOTES.md
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -158,4 +178,4 @@ jobs:
           "dist/autodl-control-ubuntu.vsix"
           --repo "${{ github.repository }}"
           --title "AutoDL Control ${{ github.ref_name }}"
-          --notes "Install the VSIX from this release. See CHANGELOG.md for details."
+          --notes-file RELEASE_NOTES.md

@@ -41,8 +41,24 @@ export interface ExtensionSettings {
   sshPublicKey: string;
   sshIdentityFile: string;
   injectSshPublicKeyOnCreate: boolean;
+  remoteProxy: RemoteProxySettings;
+  remoteCodex: RemoteCodexSettings;
   sync: FolderSyncSettings;
   quickCreate: QuickCreateConfig;
+}
+
+export interface RemoteProxySettings {
+  enabled: boolean;
+  proxyUrl: string;
+  remoteForwardPort: number;
+}
+
+export interface RemoteCodexSettings {
+  autoInstall: boolean;
+  autoReloadRemoteWindow: boolean;
+  extensionId: string;
+  authJsonPath: string;
+  installTimeoutMs: number;
 }
 
 export interface FolderSyncSettings {
@@ -62,6 +78,18 @@ export function getSettings(): ExtensionSettings {
     sshPublicKey: config.get<string>("sshPublicKey", "").trim(),
     sshIdentityFile: config.get<string>("sshIdentityFile", "").trim(),
     injectSshPublicKeyOnCreate: config.get<boolean>("injectSshPublicKeyOnCreate", true),
+    remoteProxy: {
+      enabled: config.get<boolean>("remoteProxy.enabled", true),
+      proxyUrl: config.get<string>("remoteProxy.proxyUrl", "http://127.0.0.1:7890").trim(),
+      remoteForwardPort: config.get<number>("remoteProxy.remoteForwardPort", 0),
+    },
+    remoteCodex: {
+      autoInstall: config.get<boolean>("remoteCodex.autoInstall", false),
+      autoReloadRemoteWindow: config.get<boolean>("remoteCodex.autoReloadRemoteWindow", true),
+      extensionId: config.get<string>("remoteCodex.extensionId", "openai.chatgpt").trim(),
+      authJsonPath: config.get<string>("remoteCodex.authJsonPath", "").trim(),
+      installTimeoutMs: config.get<number>("remoteCodex.installTimeoutSeconds", 600) * 1000,
+    },
     sync: {
       localFolder: config.get<string>("sync.localFolder", "").trim(),
       remoteFolder: config.get<string>("sync.remoteFolder", "/root/autodl-sync").trim(),

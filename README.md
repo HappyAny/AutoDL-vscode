@@ -92,7 +92,7 @@ Instance actions in the tree:
 - Running instances: Connect with Remote SSH, Open Jupyter, Upload Sync Folder, Shutdown Instance, Release Instance
 - Shutdown instances: Turn On Instance, Release Instance
 
-When an instance is released through the extension, its managed `Host autodl-<instance>` SSH config block and matching VS Code Open Recent Remote - SSH entry are removed. Use `AutoDL: Clean SSH Config` to remove all stale AutoDL-managed blocks.
+When a reachable running instance is released through the extension, AutoDL Control first wipes the remote home directory contents over SSH, including Codex and VS Code server data under `/root`, verifies the remote home directory is empty, then shuts down and releases the instance. The AutoDL output panel logs every release step and prints the remote verification result, including the remaining-entry count. If that verification still finds remaining entries, release is aborted. Already stopped instances cannot be wiped over SSH, so release relies on AutoDL clearing the instance data. After release, the managed `Host autodl-<instance>` SSH config block and matching VS Code Open Recent Remote - SSH entry are removed. Use `AutoDL: Clean SSH Config` to remove all stale AutoDL-managed blocks.
 
 The GPU and image catalogs are cached in VS Code global storage. Use the cloud-download icon in the AutoDL view title to refresh them from the AutoDL API docs and your private image list.
 
@@ -143,6 +143,14 @@ Important settings:
 - `autodl.sshPublicKey`
 - `autodl.sshIdentityFile`
 - `autodl.injectSshPublicKeyOnCreate`
+- `autodl.remoteProxy.enabled`
+- `autodl.remoteProxy.proxyUrl`
+- `autodl.remoteProxy.remoteForwardPort`
+- `autodl.remoteCodex.autoInstall`
+- `autodl.remoteCodex.autoReloadRemoteWindow`
+- `autodl.remoteCodex.extensionId`
+- `autodl.remoteCodex.authJsonPath`
+- `autodl.remoteCodex.installTimeoutSeconds`
 - `autodl.sync.localFolder`
 - `autodl.sync.remoteFolder`
 - `autodl.sync.intervalSeconds`
@@ -161,6 +169,40 @@ When Connect is clicked, the extension:
 4. Opens `vscode-remote://ssh-remote+autodl-<instance>/root`.
 
 Managed `autodl-*` SSH hosts use a separate `~/.ssh/autodl-vscode-known_hosts` file and non-interactive host-key acceptance so AutoDL proxy endpoints do not block folder upload or sync.
+
+Managed `autodl-*` SSH hosts also include a local-proxy remote forward by default:
+
+```sshconfig
+RemoteForward 7890 127.0.0.1:7890
+```
+
+This lets the remote VS Code server use a local HTTP or SOCKS5 proxy on port 7890 through the existing SSH connection. The extension does not change your local VS Code proxy settings. Use `AutoDL: Toggle Remote Proxy Settings` to write these remote VS Code settings for the selected instance; run it again to remove the same keys:
+
+```json
+{
+  "http.proxy": "http://127.0.0.1:7890",
+  "http.proxyStrictSSL": false,
+  "http.proxySupport": "on"
+}
+```
+
+The proxy URL can be changed with `autodl.remoteProxy.proxyUrl`; `http`, `https`, `socks`, `socks4`, and `socks5` URLs are accepted.
+
+### Remote Proxy and Codex
+
+Use `AutoDL: Prepare Remote Proxy and Codex` from the view title to enable the remote proxy and install the configured Codex VS Code extension in one action. If the proxy settings are already present, the same action removes them and skips the install. Instance context actions remain separate: `AutoDL: Toggle Remote Proxy Settings` only toggles proxy settings, and `AutoDL: Install Remote Codex Extension` installs the configured extension.
+
+The default extension id is `openai.chatgpt`. Installs run through the remote VS Code server CLI over SSH, support both legacy and current VS Code server layouts, and are verified with the remote extension list plus the remote extension directory.
+
+Important behavior:
+
+- If the remote VS Code Server CLI is not initialized yet, AutoDL logs a first-connection reminder and skips remote proxy settings, local extension copy, upload, install verification, and remote window refresh. Open the target with Remote SSH once, wait for server initialization, then retry.
+- If remote Marketplace installation fails after the server CLI exists, AutoDL falls back to copying the locally installed extension to the remote Linux extension directory through a compressed tar stream, writes remote extension metadata, and restores executable bits for bundled Linux tools.
+- Codex installation writes remote proxy settings only when they are missing or do not match the configured values. Once they match, it skips rewriting them until you explicitly change or remove them with `AutoDL: Toggle Remote Proxy Settings`.
+- If `autodl.remoteCodex.authJsonPath` is set, AutoDL uploads that local `auth.json` to `~/.codex/auth.json` after a successful remote Codex install, and downloads the remote file back to the same local path before wiping a reachable running instance during release. Leave the setting empty to disable auth upload and download.
+- After a successful installation, AutoDL reloads the current matching Remote SSH window. When the command is run from another window, it opens the AutoDL remote folder in a new window so the remote extension state refreshes. Set `autodl.remoteCodex.autoReloadRemoteWindow` to `false` to disable this behavior.
+
+Toggle `AutoDL: Toggle Remote Codex Auto Install`, or set `autodl.remoteCodex.autoInstall`, to install Codex automatically after Connect.
 
 The VS Code Remote - SSH extension should be installed for the remote window to open cleanly.
 
@@ -189,8 +231,8 @@ The CI workflow builds the VSIX on every push, pull request, or manual workflow 
 To publish a GitHub Release with the compiled VSIX attached, push a version tag:
 
 ```powershell
-git tag v0.2.4
-git push origin v0.2.4
+git tag v0.2.19
+git push origin v0.2.19
 ```
 
-The release job creates a GitHub Release for the tag and uploads `dist/autodl-control.vsix`.
+The release job creates a GitHub Release for the tag, uploads the platform VSIX files, and uses the matching `CHANGELOG.md` section as the release notes.

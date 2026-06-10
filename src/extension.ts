@@ -38,14 +38,24 @@ import {
 import { InstancesProvider, InstanceItem } from "./instancesView";
 import {
   connectWithRemoteSsh,
+  ensureRemoteVsCodeSettings,
   formatSnapshotSummary,
   jupyterUrl,
+  ManagedSshHostOptions,
   removeAllManagedSshHosts,
   removeManagedSshHost,
   removeRecentlyOpenedRemoteSshEntries,
+  remoteSshUri,
+  runManagedSshCommand,
   sshAlias,
+  toggleRemoteVsCodeSettings,
   writeManagedSshHost,
 } from "./ssh";
+import {
+  checkRemoteVsCodeServerReady,
+  installRemoteVsCodeExtension,
+} from "./remoteExtensions";
+import { remoteProxySettingsPayload, remoteProxyUrl, resolveRemoteProxy } from "./remoteProxy";
 import {
   activeFolderSyncAliases,
   startFolderSync,
@@ -60,6 +70,38 @@ let provider: InstancesProvider;
 let autoRefreshTimer: ReturnType<typeof setInterval> | undefined;
 const recentRemotePathsKey = "autodl.recentRemotePathsByInstance";
 type RecentRemotePathsByInstance = Record<string, string[]>;
+const remoteHomeWipeTimeoutMs = 5 * 60 * 1000;
+const remoteHomeWipeCommand = [
+  "set -eu",
+  'home="${HOME:-/root}"',
+  'case "$home" in ""|"/") echo "Refusing to wipe unsafe HOME: $home" >&2; exit 64;; esac',
+  'echo "Remote home wipe target: $home"',
+  'if [ -d "$home" ]; then for attempt in 1 2 3; do find "$home" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; sync || true; remaining="$(find "$home" -mindepth 1 -maxdepth 1 -print -quit)"; [ -z "$remaining" ] && break; echo "Remote home wipe retry $attempt; first remaining entry: $remaining" >&2; sleep 1; done; remaining="$(find "$home" -mindepth 1 -maxdepth 1 -print -quit)"; if [ -n "$remaining" ]; then echo "Remote home wipe verification failed; first remaining entry: $remaining" >&2; exit 65; fi; remaining_count="$(find "$home" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d " ")"; else remaining_count=0; fi; echo "Remote home wipe remaining entries: ${remaining_count:-0}"',
+  'echo "Remote home wipe verified: $home"',
+].join("; ");
+type RemoteHomeWipeResult = "verified" | "skipped";
+const remoteCodexAuthFoundMarker = "__AUTODL_CODEX_AUTH_FOUND__";
+const remoteCodexAuthMissingMarker = "__AUTODL_CODEX_AUTH_MISSING__";
+const remoteCodexAuthUploadCommand = [
+  "set -eu",
+  'codex_dir="${HOME:-/root}/.codex"',
+  'mkdir -p "$codex_dir"',
+  'chmod 700 "$codex_dir"',
+  "umask 077",
+  'cat > "$codex_dir/auth.json"',
+  'chmod 600 "$codex_dir/auth.json"',
+  'echo "Remote Codex auth written: $codex_dir/auth.json"',
+].join("; ");
+const remoteCodexAuthDownloadCommand = [
+  "set -eu",
+  'auth_file="${HOME:-/root}/.codex/auth.json"',
+  'if [ -f "$auth_file" ]; then',
+  `  printf '${remoteCodexAuthFoundMarker}\\n'`,
+  '  cat "$auth_file"',
+  "else",
+  `  printf '${remoteCodexAuthMissingMarker}\\n'`,
+  "fi",
+].join("\n");
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   output = vscode.window.createOutputChannel("AutoDL");
@@ -103,6 +145,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("autodl.quickCreate", () => quickCreate(context)),
     vscode.commands.registerCommand("autodl.selectServer", () => selectServer(context)),
     vscode.commands.registerCommand("autodl.setSshPublicKey", () => setSshPublicKey()),
+    vscode.commands.registerCommand("autodl.prepareRemote", (item?: InstanceItem) =>
+      prepareRemote(context, item),
+    ),
+    vscode.commands.registerCommand("autodl.writeRemoteProxySettings", (item?: InstanceItem) =>
+      writeRemoteProxySettings(context, item),
+    ),
+    vscode.commands.registerCommand("autodl.installRemoteCodex", (item?: InstanceItem) =>
+      installRemoteCodex(context, item),
+    ),
+    vscode.commands.registerCommand("autodl.toggleRemoteCodexAutoInstall", () =>
+      toggleRemoteCodexAutoInstall(),
+    ),
     vscode.commands.registerCommand("autodl.setSyncFolders", () => setSyncFolders()),
     vscode.commands.registerCommand("autodl.startFolderSync", (item?: InstanceItem) =>
       startFolderSyncForInstance(context, item),
@@ -314,13 +368,18 @@ async function connectInstance(
     const uuid = mustInstanceUuid(instance);
     const snapshot = await snapshotWithRetry(client, uuid, 3);
     const settings = getSettings();
-    await connectWithRemoteSsh(
+    const alias = await connectWithRemoteSsh(
       uuid,
       snapshot,
       settings.openRemotePath,
       output,
-      settings.sshIdentityFile,
+      managedSshHostOptions(settings),
     );
+    if (settings.remoteCodex.autoInstall) {
+      void installRemoteCodexForAlias(alias, settings, "auto").catch((error) =>
+        reportErrorToOutput(error),
+      );
+    }
     try {
       await rememberRecentRemotePath(context, uuid, settings.openRemotePath);
     } catch (error) {
@@ -419,27 +478,69 @@ async function releaseInstance(
     }
     const uuid = mustInstanceUuid(instance);
     const choice = await vscode.window.showWarningMessage(
-      `Release AutoDL instance ${uuid}? This cannot be undone.`,
+      `Release AutoDL instance ${uuid}? AutoDL will wipe the remote home directory before release. This cannot be undone.`,
       { modal: true },
       "Release",
     );
     if (choice !== "Release") {
       return;
     }
-    if (needsPowerOff(instance)) {
-      await powerOffIfNeeded(client, uuid);
-      await waitForStatus(
-        client,
-        uuid,
-        ["stopped", "shutdown"],
-        getSettings().waitTimeoutMs,
-        getSettings().waitIntervalMs,
-      );
-    }
-    await client.release(uuid);
-    await cleanupReleasedInstance(context, uuid, [getSettings().openRemotePath]);
+    const settings = getSettings();
+    let cleanupResult: RemoteHomeWipeResult | undefined;
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `AutoDL release ${uuid}`,
+        cancellable: false,
+      },
+      async (progress) => {
+        output.show(true);
+        output.appendLine("");
+        appendReleaseLog(`${uuid}: release requested`);
+        progress.report({ message: "Backing up remote Codex auth" });
+        try {
+          await backupRemoteCodexAuthBeforeRelease(client, instance, settings);
+        } catch (error) {
+          appendReleaseLog(
+            `${uuid}: release aborted before remote home wipe because Codex auth backup failed`,
+          );
+          throw error;
+        }
+        progress.report({ message: "Wiping and verifying remote home" });
+        try {
+          cleanupResult = await wipeRemoteHomeBeforeRelease(client, instance, settings);
+        } catch (error) {
+          appendReleaseLog(
+            `${uuid}: release aborted before AutoDL API release because remote cleanup verification failed`,
+          );
+          throw error;
+        }
+        if (needsPowerOff(instance)) {
+          progress.report({ message: "Stopping instance" });
+          appendReleaseLog(`${uuid}: stopping instance before release`);
+          await powerOffIfNeeded(client, uuid);
+          await waitForStatus(
+            client,
+            uuid,
+            ["stopped", "shutdown"],
+            settings.waitTimeoutMs,
+            settings.waitIntervalMs,
+          );
+        }
+        progress.report({ message: "Calling AutoDL release API" });
+        appendReleaseLog(`${uuid}: calling AutoDL release API`);
+        await client.release(uuid);
+        appendReleaseLog(`${uuid}: AutoDL release API completed`);
+        await cleanupReleasedInstance(context, uuid, [settings.openRemotePath]);
+        appendReleaseLog(`${uuid}: local SSH config and recent entries cleanup completed`);
+      },
+    );
     provider.refresh();
-    void vscode.window.showInformationMessage(`AutoDL instance released: ${uuid}`);
+    void vscode.window.showInformationMessage(
+      cleanupResult === "verified"
+        ? `AutoDL instance released: ${uuid}. Remote home cleanup verified.`
+        : `AutoDL instance released: ${uuid}. Remote cleanup was skipped because the instance was already stopped.`,
+    );
   });
 }
 
@@ -450,7 +551,7 @@ async function quickCloseAll(context: vscode.ExtensionContext): Promise<void> {
       return;
     }
     const choice = await vscode.window.showWarningMessage(
-      "Stop and release all active AutoDL instances? This cannot be undone.",
+      "Stop and release all active AutoDL instances? AutoDL will wipe each reachable remote home directory before release. This cannot be undone.",
       { modal: true },
       "Stop and Release All",
     );
@@ -467,6 +568,8 @@ async function quickCloseAll(context: vscode.ExtensionContext): Promise<void> {
       async (progress) => {
         const settings = getSettings();
         const instances = (await listAllInstances(client)).filter(isActiveInstance);
+        let verifiedCleanupCount = 0;
+        let skippedCleanupCount = 0;
         output.show(true);
         output.appendLine("");
         output.appendLine(`Quick close target count: ${instances.length}`);
@@ -475,8 +578,30 @@ async function quickCloseAll(context: vscode.ExtensionContext): Promise<void> {
           const instance = instances[index];
           const uuid = mustInstanceUuid(instance);
           progress.report({ message: `${index + 1}/${instances.length}: ${uuid}` });
+          appendReleaseLog(`${uuid}: quick close target ${index + 1}/${instances.length}`);
+          try {
+            await backupRemoteCodexAuthBeforeRelease(client, instance, settings);
+          } catch (error) {
+            appendReleaseLog(
+              `${uuid}: quick close aborted before remote home wipe because Codex auth backup failed`,
+            );
+            throw error;
+          }
+          try {
+            const cleanupResult = await wipeRemoteHomeBeforeRelease(client, instance, settings);
+            if (cleanupResult === "verified") {
+              verifiedCleanupCount += 1;
+            } else {
+              skippedCleanupCount += 1;
+            }
+          } catch (error) {
+            appendReleaseLog(
+              `${uuid}: quick close aborted before release because remote cleanup verification failed`,
+            );
+            throw error;
+          }
           if (needsPowerOff(instance)) {
-            output.appendLine(`Stopping ${uuid}`);
+            appendReleaseLog(`${uuid}: stopping instance before release`);
             await powerOffIfNeeded(client, uuid);
             await waitForStatus(
               client,
@@ -486,15 +611,20 @@ async function quickCloseAll(context: vscode.ExtensionContext): Promise<void> {
               getSettings().waitIntervalMs,
             );
           }
-          output.appendLine(`Releasing ${uuid}`);
+          appendReleaseLog(`${uuid}: calling AutoDL release API`);
           await client.release(uuid);
+          appendReleaseLog(`${uuid}: AutoDL release API completed`);
           await cleanupReleasedInstance(context, uuid, [settings.openRemotePath]);
+          appendReleaseLog(`${uuid}: local SSH config and recent entries cleanup completed`);
         }
+        appendReleaseLog(
+          `quick close completed; remote cleanup verified=${verifiedCleanupCount}, skipped=${skippedCleanupCount}`,
+        );
       },
     );
 
     provider.refresh();
-    void vscode.window.showInformationMessage("AutoDL quick close completed.");
+    void vscode.window.showInformationMessage("AutoDL quick close completed. See AutoDL output for cleanup verification logs.");
   });
 }
 
@@ -517,6 +647,90 @@ async function cleanupReleasedInstance(
   await runBestEffortCleanup(`clear recent path state for ${instanceUuid}`, () =>
     forgetRecentRemotePathsForInstance(context, instanceUuid),
   );
+}
+
+async function backupRemoteCodexAuthBeforeRelease(
+  client: AutoDLClient,
+  instance: AutoDLInstance,
+  settings: ReturnType<typeof getSettings>,
+): Promise<void> {
+  const uuid = mustInstanceUuid(instance);
+  const localPath = settings.remoteCodex.authJsonPath.trim();
+  if (!localPath) {
+    appendReleaseLog(
+      `${uuid}: Codex auth backup skipped because autodl.remoteCodex.authJsonPath is empty`,
+    );
+    return;
+  }
+  if (!needsPowerOff(instance)) {
+    appendReleaseLog(
+      `${uuid}: Codex auth backup skipped because the instance is already stopped and cannot be reached over SSH`,
+    );
+    return;
+  }
+
+  appendReleaseLog(`${uuid}: checking remote Codex auth before home wipe`);
+  const snapshot = await snapshotWithRetry(client, uuid, 3);
+  const alias = await writeManagedSshHost(uuid, snapshot, managedSshHostOptions(settings));
+  const result = await runManagedSshCommand(alias, remoteCodexAuthDownloadCommand, 30_000);
+  if (result.stderr.trim()) {
+    appendReleaseCommandOutput(`${uuid}: remote Codex auth backup stderr`, result.stderr);
+  }
+
+  const parsed = parseRemoteCodexAuthDownload(result.stdout);
+  if (!parsed.found) {
+    appendReleaseLog(`${uuid}: remote Codex auth not found; no local overwrite needed`);
+    return;
+  }
+
+  await fs.mkdir(path.dirname(localPath), { recursive: true });
+  await fs.writeFile(localPath, parsed.content, "utf8");
+  appendReleaseLog(`${uuid}: remote Codex auth downloaded to ${localPath}`);
+}
+
+async function wipeRemoteHomeBeforeRelease(
+  client: AutoDLClient,
+  instance: AutoDLInstance,
+  settings: ReturnType<typeof getSettings>,
+): Promise<RemoteHomeWipeResult> {
+  const uuid = mustInstanceUuid(instance);
+  if (!needsPowerOff(instance)) {
+    appendReleaseLog(
+      `${uuid}: remote home wipe skipped because the instance is already stopped; AutoDL release will clear instance data`,
+    );
+    return "skipped";
+  }
+
+  output.show(true);
+  appendReleaseLog(`${uuid}: fetching snapshot for remote cleanup`);
+  const snapshot = await snapshotWithRetry(client, uuid, 3);
+  appendReleaseLog(`${uuid}: writing managed SSH host for remote cleanup`);
+  const alias = await writeManagedSshHost(uuid, snapshot, managedSshHostOptions(settings));
+  appendReleaseLog(`${uuid}: running remote home wipe over SSH alias ${alias}`);
+  const wipeResult = await runManagedSshCommand(
+    alias,
+    remoteHomeWipeCommand,
+    remoteHomeWipeTimeoutMs,
+  );
+  appendReleaseCommandOutput(`${uuid}: remote cleanup stdout`, wipeResult.stdout);
+  appendReleaseCommandOutput(`${uuid}: remote cleanup stderr`, wipeResult.stderr);
+  appendReleaseLog(`${uuid}: remote home cleanup verified; continuing to release`);
+  return "verified";
+}
+
+function appendReleaseLog(message: string): void {
+  output.appendLine(`[release ${new Date().toISOString()}] ${message}`);
+}
+
+function appendReleaseCommandOutput(label: string, value: string): void {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return;
+  }
+  appendReleaseLog(`${label}:`);
+  for (const line of trimmed.split(/\r?\n/)) {
+    output.appendLine(`  ${line}`);
+  }
 }
 
 async function runBestEffortCleanup(
@@ -553,7 +767,7 @@ async function startFolderSyncForInstance(
     }
     const uuid = mustInstanceUuid(instance);
     const snapshot = await snapshotWithRetry(client, uuid, 3);
-    const alias = await writeManagedSshHost(uuid, snapshot, nextSettings.sshIdentityFile);
+    const alias = await writeManagedSshHost(uuid, snapshot, managedSshHostOptions(nextSettings));
     await startFolderSyncForAlias(alias, nextSettings.sync);
   });
 }
@@ -582,7 +796,7 @@ async function uploadSyncFolder(
 
     const uuid = mustInstanceUuid(instance);
     const snapshot = await snapshotWithRetry(client, uuid, 3);
-    const alias = await writeManagedSshHost(uuid, snapshot, settings.sshIdentityFile);
+    const alias = await writeManagedSshHost(uuid, snapshot, managedSshHostOptions(settings));
     await uploadFolderOnce({
       alias,
       localFolder: settings.sync.localFolder,
@@ -591,6 +805,253 @@ async function uploadSyncFolder(
       output,
     });
   });
+}
+
+async function writeRemoteProxySettings(
+  context: vscode.ExtensionContext,
+  item?: InstanceItem,
+): Promise<void> {
+  await runSafely(async () => {
+    const resolved = await resolveInstanceAlias(context, item);
+    if (!resolved) {
+      return;
+    }
+    await toggleRemoteProxyForAlias(resolved.alias, resolved.settings);
+  });
+}
+
+async function prepareRemote(
+  context: vscode.ExtensionContext,
+  item?: InstanceItem,
+): Promise<void> {
+  await runSafely(async () => {
+    const resolved = await resolveInstanceAlias(context, item);
+    if (!resolved) {
+      return;
+    }
+    const proxyResult = await toggleRemoteProxyForAlias(resolved.alias, resolved.settings);
+    if (proxyResult !== "enabled") {
+      output.appendLine("Remote proxy was disabled; skipped Codex extension install.");
+      return;
+    }
+    await installRemoteCodexForAlias(resolved.alias, resolved.settings, "manual");
+  });
+}
+
+async function installRemoteCodex(
+  context: vscode.ExtensionContext,
+  item?: InstanceItem,
+): Promise<void> {
+  await runSafely(async () => {
+    const resolved = await resolveInstanceAlias(context, item);
+    if (!resolved) {
+      return;
+    }
+    await installRemoteCodexForAlias(resolved.alias, resolved.settings, "manual");
+  });
+}
+
+async function toggleRemoteCodexAutoInstall(): Promise<void> {
+  await runSafely(async () => {
+    const config = vscode.workspace.getConfiguration("autodl");
+    const next = !getSettings().remoteCodex.autoInstall;
+    await config.update("remoteCodex.autoInstall", next, vscode.ConfigurationTarget.Global);
+    void vscode.window.showInformationMessage(
+      `AutoDL remote Codex auto install ${next ? "enabled" : "disabled"}.`,
+    );
+  });
+}
+
+async function installRemoteCodexForAlias(
+  alias: string,
+  settings: ReturnType<typeof getSettings>,
+  mode: "auto" | "manual",
+): Promise<void> {
+  const extensionId = settings.remoteCodex.extensionId || "openai.chatgpt";
+  const proxy = resolveRemoteProxy(settings.remoteProxy);
+  output.show(true);
+  output.appendLine("");
+  output.appendLine(
+    `${mode === "auto" ? "Auto installing" : "Installing"} remote VS Code extension ${extensionId} on ${alias}.`,
+  );
+  const serverStatus = await checkRemoteVsCodeServerReady(
+    alias,
+    Math.min(settings.remoteCodex.installTimeoutMs, 60_000),
+  );
+  output.appendLine(serverStatus.output);
+  if (!serverStatus.ready) {
+    void vscode.window.showWarningMessage(
+      `AutoDL remote VS Code Server is not ready on ${alias}. Open it with Remote SSH once, then retry Codex install.`,
+    );
+    return;
+  }
+  if (proxy) {
+    try {
+      const remoteSettings = remoteProxySettingsPayload(proxy);
+      const proxyResult = await ensureRemoteVsCodeSettings(alias, remoteSettings);
+      output.appendLine(
+        proxyResult.action === "written"
+          ? `Remote proxy settings written: ${proxyResult.settingsPath}`
+          : `Remote proxy settings already present; skipped rewrite: ${proxyResult.settingsPath}`,
+      );
+    } catch (error) {
+      output.appendLine(`Warning: failed to write remote proxy settings: ${formatError(error)}`);
+    }
+  }
+
+  const installResult = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `AutoDL: installing ${extensionId} on ${alias}`,
+      cancellable: false,
+    },
+    () =>
+      installRemoteVsCodeExtension({
+        alias,
+        extensionId,
+        proxyUrl: proxy ? remoteProxyUrl(proxy) : undefined,
+        timeoutMs: settings.remoteCodex.installTimeoutMs,
+      }),
+  );
+  output.appendLine(
+    installResult.output || `VS Code extension install command finished: ${extensionId}`,
+  );
+  if (installResult.status === "serverNotReady") {
+    void vscode.window.showWarningMessage(
+      `AutoDL remote VS Code Server is not ready on ${alias}. Open it with Remote SSH once, then retry Codex install.`,
+    );
+    return;
+  }
+  await uploadLocalCodexAuthAfterInstall(alias, settings);
+  await reloadRemoteWindowAfterCodexInstall(alias, settings);
+  void vscode.window.showInformationMessage(`AutoDL remote Codex extension installed: ${alias}`);
+}
+
+async function uploadLocalCodexAuthAfterInstall(
+  alias: string,
+  settings: ReturnType<typeof getSettings>,
+): Promise<void> {
+  const localPath = settings.remoteCodex.authJsonPath.trim();
+  if (!localPath) {
+    output.appendLine("Codex auth upload skipped: autodl.remoteCodex.authJsonPath is empty.");
+    return;
+  }
+
+  let content: string;
+  try {
+    content = await fs.readFile(localPath, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    output.appendLine(
+      code === "ENOENT"
+        ? `Codex auth upload skipped: local auth file was not found at ${localPath}.`
+        : `Warning: failed to read local Codex auth file ${localPath}: ${formatError(error)}`,
+    );
+    return;
+  }
+
+  try {
+    const result = await runManagedSshCommand(alias, remoteCodexAuthUploadCommand, 30_000, content);
+    if (result.stdout.trim()) {
+      output.appendLine(result.stdout.trim());
+    }
+    if (result.stderr.trim()) {
+      output.appendLine(result.stderr.trim());
+    }
+    output.appendLine(`Codex auth uploaded from ${localPath} to ${alias}:~/.codex/auth.json`);
+  } catch (error) {
+    output.appendLine(`Warning: failed to upload Codex auth to ${alias}: ${formatError(error)}`);
+  }
+}
+
+function parseRemoteCodexAuthDownload(
+  stdout: string,
+): { found: true; content: string } | { found: false } {
+  const firstLineEnd = stdout.indexOf("\n");
+  const firstLine = (firstLineEnd === -1 ? stdout : stdout.slice(0, firstLineEnd)).replace(
+    /\r$/,
+    "",
+  );
+  const rest = firstLineEnd === -1 ? "" : stdout.slice(firstLineEnd + 1);
+  if (firstLine === remoteCodexAuthFoundMarker) {
+    return { found: true, content: rest };
+  }
+  if (firstLine === remoteCodexAuthMissingMarker) {
+    return { found: false };
+  }
+  throw new Error("Remote Codex auth backup returned an unexpected response.");
+}
+
+async function reloadRemoteWindowAfterCodexInstall(
+  alias: string,
+  settings: ReturnType<typeof getSettings>,
+): Promise<void> {
+  if (!settings.remoteCodex.autoReloadRemoteWindow) {
+    output.appendLine("Remote window auto reload is disabled.");
+    return;
+  }
+  const remoteUri = remoteSshUri(alias, settings.openRemotePath);
+  const targetAuthority = remoteUri.authority.toLowerCase();
+  const currentWindowIsTarget = (vscode.workspace.workspaceFolders || []).some(
+    (folder) =>
+      folder.uri.scheme === "vscode-remote" &&
+      folder.uri.authority.toLowerCase() === targetAuthority,
+  );
+
+  if (currentWindowIsTarget) {
+    output.appendLine(`Reloading current Remote SSH window: ${remoteUri.toString()}`);
+    await vscode.commands.executeCommand("workbench.action.reloadWindow");
+    return;
+  }
+
+  output.appendLine(`Opening Remote SSH window to refresh extension state: ${remoteUri.toString()}`);
+  await vscode.commands.executeCommand("vscode.openFolder", remoteUri, {
+    forceNewWindow: true,
+  });
+}
+
+async function resolveInstanceAlias(
+  context: vscode.ExtensionContext,
+  item?: InstanceItem,
+): Promise<{ alias: string; settings: ReturnType<typeof getSettings> } | undefined> {
+  const client = await createClient(context);
+  if (!client) {
+    return undefined;
+  }
+  const instance = await resolveInstance(client, item);
+  if (!instance) {
+    return undefined;
+  }
+  const uuid = mustInstanceUuid(instance);
+  const settings = getSettings();
+  const snapshot = await snapshotWithRetry(client, uuid, 3);
+  const alias = await writeManagedSshHost(uuid, snapshot, managedSshHostOptions(settings));
+  return { alias, settings };
+}
+
+async function toggleRemoteProxyForAlias(
+  alias: string,
+  settings: ReturnType<typeof getSettings>,
+): Promise<"enabled" | "disabled"> {
+  const proxy = resolveRemoteProxy(settings.remoteProxy);
+  if (!proxy) {
+    throw new Error("AutoDL remote proxy forwarding is disabled.");
+  }
+  const remoteSettings = remoteProxySettingsPayload(proxy);
+  const result = await toggleRemoteVsCodeSettings(alias, remoteSettings);
+  output.show(true);
+  output.appendLine("");
+  output.appendLine(
+    `Remote proxy settings ${result.action} for ${alias}: ${result.settingsPath}`,
+  );
+  output.appendLine(
+    `SSH RemoteForward ${proxy.remoteForwardPort} ${proxy.localHost}:${proxy.localPort}`,
+  );
+  output.appendLine(`Remote http.proxy: ${String(remoteSettings["http.proxy"])}`);
+  void vscode.window.showInformationMessage(
+    `AutoDL remote proxy ${result.action}: ${alias}`,
+  );
+  return result.action;
 }
 
 async function startFolderSyncForAlias(
@@ -608,6 +1069,22 @@ async function startFolderSyncForAlias(
     excludeNames: sync.excludeNames,
     output,
   });
+}
+
+function managedSshHostOptions(
+  settings: ReturnType<typeof getSettings>,
+): ManagedSshHostOptions {
+  const proxy = resolveRemoteProxy(settings.remoteProxy);
+  return {
+    identityFile: settings.sshIdentityFile || undefined,
+    remoteForward: proxy
+      ? {
+          remotePort: proxy.remoteForwardPort,
+          localHost: proxy.localHost,
+          localPort: proxy.localPort,
+        }
+      : undefined,
+  };
 }
 
 async function rememberRecentRemotePath(

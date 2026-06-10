@@ -2,7 +2,7 @@
   "name": "autodl-vscode",
   "displayName": "AutoDL Control",
   "description": "Quickly create, connect, stop, and release AutoDL Pro instances from VS Code.",
-  "version": "0.2.4",
+  "version": "0.2.19",
   "publisher": "happyan",
   "license": "MIT",
   "icon": "media/autodl-icon.png",
@@ -40,6 +40,10 @@
     "onCommand:autodl.quickCreate",
     "onCommand:autodl.selectServer",
     "onCommand:autodl.setSshPublicKey",
+    "onCommand:autodl.prepareRemote",
+    "onCommand:autodl.writeRemoteProxySettings",
+    "onCommand:autodl.installRemoteCodex",
+    "onCommand:autodl.toggleRemoteCodexAutoInstall",
     "onCommand:autodl.setSyncFolders",
     "onCommand:autodl.startFolderSync",
     "onCommand:autodl.uploadSyncFolder",
@@ -102,6 +106,26 @@
       {
         "command": "autodl.setSshPublicKey",
         "title": "AutoDL: Set SSH Public Key"
+      },
+      {
+        "command": "autodl.prepareRemote",
+        "title": "AutoDL: Prepare Remote Proxy and Codex",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "autodl.writeRemoteProxySettings",
+        "title": "AutoDL: Toggle Remote Proxy Settings",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "autodl.installRemoteCodex",
+        "title": "AutoDL: Install Remote Codex Extension",
+        "icon": "$(extensions)"
+      },
+      {
+        "command": "autodl.toggleRemoteCodexAutoInstall",
+        "title": "AutoDL: Toggle Remote Codex Auto Install",
+        "icon": "$(robot)"
       },
       {
         "command": "autodl.setSyncFolders",
@@ -194,6 +218,11 @@
           "command": "autodl.setSyncFolders",
           "when": "view == autodlInstances",
           "group": "navigation@5"
+        },
+        {
+          "command": "autodl.prepareRemote",
+          "when": "view == autodlInstances",
+          "group": "navigation@6"
         }
       ],
       "view/item/context": [
@@ -231,6 +260,16 @@
           "command": "autodl.startFolderSync",
           "when": "view == autodlInstances && viewItem == autodlInstanceRunning",
           "group": "actions@3"
+        },
+        {
+          "command": "autodl.writeRemoteProxySettings",
+          "when": "view == autodlInstances && viewItem == autodlInstanceRunning",
+          "group": "actions@4"
+        },
+        {
+          "command": "autodl.installRemoteCodex",
+          "when": "view == autodlInstances && viewItem == autodlInstanceRunning",
+          "group": "actions@5"
         }
       ],
       "commandPalette": [
@@ -239,6 +278,18 @@
         },
         {
           "command": "autodl.setSshPublicKey"
+        },
+        {
+          "command": "autodl.prepareRemote"
+        },
+        {
+          "command": "autodl.writeRemoteProxySettings"
+        },
+        {
+          "command": "autodl.installRemoteCodex"
+        },
+        {
+          "command": "autodl.toggleRemoteCodexAutoInstall"
         },
         {
           "command": "autodl.setSyncFolders"
@@ -287,6 +338,46 @@
           "type": "boolean",
           "default": true,
           "description": "Append autodl.sshPublicKey to /root/.ssh/authorized_keys during new instance creation."
+        },
+        "autodl.remoteProxy.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Write RemoteForward into AutoDL managed SSH hosts so remote VS Code can reuse a local proxy."
+        },
+        "autodl.remoteProxy.proxyUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:7890",
+          "description": "Local proxy URL forwarded to AutoDL instances. http, https, socks, socks4, and socks5 URLs are supported."
+        },
+        "autodl.remoteProxy.remoteForwardPort": {
+          "type": "number",
+          "default": 0,
+          "description": "Remote forwarded port. Use 0 to reuse the port from autodl.remoteProxy.proxyUrl."
+        },
+        "autodl.remoteCodex.autoInstall": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically install the configured Codex VS Code extension on the selected AutoDL remote after Remote SSH connect."
+        },
+        "autodl.remoteCodex.autoReloadRemoteWindow": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically reload the current matching Remote SSH window, or open the remote folder in a new window, after installing the configured Codex VS Code extension."
+        },
+        "autodl.remoteCodex.extensionId": {
+          "type": "string",
+          "default": "openai.chatgpt",
+          "description": "VS Code extension id installed on AutoDL remotes by AutoDL: Install Remote Codex Extension."
+        },
+        "autodl.remoteCodex.authJsonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional local Codex auth.json path uploaded after remote Codex install and restored before releasing an instance. Leave empty to disable auth upload/download."
+        },
+        "autodl.remoteCodex.installTimeoutSeconds": {
+          "type": "number",
+          "default": 600,
+          "description": "Timeout for installing the Codex VS Code extension on the remote."
         },
         "autodl.sync.localFolder": {
           "type": "string",
