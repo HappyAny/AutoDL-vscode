@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.22
+
+- Fixed Windows VS Code CLI reconnect launch by quoting `code.cmd` paths with spaces.
+- Passed Remote SSH URIs to the CLI without percent-encoding the `ssh-remote+host` authority separator.
+
+## 0.2.21
+
+- Added `autodl.remoteCodex.postInstallAction` with `reconnect` as the default Codex post-install action.
+- Replaced `autodl.remoteCodex.autoReloadRemoteWindow` with `autodl.remoteCodex.postInstallActionEnabled`.
+- Changed the Codex post-install reconnect path to request a fresh Remote SSH window, then ask before closing the old matching remote window.
+
 ## 0.2.20
 
 - Removed the implicit 7890 and VS Code `http.proxy` fallbacks; AutoDL now only configures proxy forwarding when `autodl.remoteProxy.proxyUrl` is set.

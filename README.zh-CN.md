@@ -150,7 +150,8 @@ Token 存在 VS Code SecretStorage 中。`AUTODL_TOKEN` 可作为本地环境变
 - `autodl.remoteProxy.localForwardHost`
 - `autodl.remoteProxy.remoteForwardPort`
 - `autodl.remoteCodex.autoInstall`
-- `autodl.remoteCodex.autoReloadRemoteWindow`
+- `autodl.remoteCodex.postInstallActionEnabled`
+- `autodl.remoteCodex.postInstallAction`
 - `autodl.remoteCodex.extensionId`
 - `autodl.remoteCodex.authJsonPath`
 - `autodl.remoteCodex.installTimeoutSeconds`
@@ -207,7 +208,7 @@ RemoteForward 7890 127.0.0.1:7890
 - 若远端 server CLI 已存在但 Marketplace 安装没有通过校验，AutoDL 会自动用压缩 tar 流复制本机已安装扩展到远端 Linux 扩展目录，写入远端扩展安装元数据，并恢复捆绑 Linux 工具的可执行权限。
 - Codex 安装流程只有在远端代理设置缺失或不等于当前配置值时才会写入。值已经正确时会跳过重写，直到你用 `AutoDL: Toggle Remote Proxy Settings` 显式修改或移除。
 - 如果设置了 `autodl.remoteCodex.authJsonPath`，AutoDL 会在远端 Codex 安装成功后，把这个本地 `auth.json` 上传到 `~/.codex/auth.json`；释放可连接的运行中实例并清空 home 前，如果远端存在 `~/.codex/auth.json`，会先下载覆盖到同一个本地路径。该设置为空时不处理 auth 上传和下载。
-- 安装成功后，AutoDL 会询问是否 reload 当前匹配的 Remote SSH 窗口；如果命令来自其他窗口，则询问是否打开对应 AutoDL 远端目录窗口，让远端扩展状态刷新，同时避免意外卡住当前窗口。可将 `autodl.remoteCodex.autoReloadRemoteWindow` 设为 `true` 让这个 reload/open 步骤自动执行。
+- 安装成功后，`autodl.remoteCodex.postInstallActionEnabled` 控制是否执行安装后的窗口动作。启用时，`autodl.remoteCodex.postInstallAction` 决定具体动作：默认的 `reconnect` 会请求打开一个新的 AutoDL Remote SSH 窗口，然后询问是否关闭旧的匹配远端窗口；`reload` 保留旧的原地 reload 行为。关闭启用开关，或将动作设为 `none`，则只显示手动重连/打开提示。
 
 运行 `AutoDL: Toggle Remote Codex Auto Install`，或修改 `autodl.remoteCodex.autoInstall`，可以控制连接后是否自动安装。
 
@@ -244,8 +245,8 @@ CI 会在每次 push、pull request 或手动运行时构建 VSIX。需要测试
 发布 GitHub Release 并附带编译好的 VSIX 时，推送版本 tag：
 
 ```bash
-git tag v0.2.20
-git push origin v0.2.20
+git tag v0.2.22
+git push origin v0.2.22
 ```
 
 Release job 会为该 tag 创建 GitHub Release，上传各平台 VSIX，并把 `CHANGELOG.md` 中匹配版本的小节作为 Release notes。

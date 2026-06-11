@@ -152,7 +152,8 @@ Important settings:
 - `autodl.remoteProxy.localForwardHost`
 - `autodl.remoteProxy.remoteForwardPort`
 - `autodl.remoteCodex.autoInstall`
-- `autodl.remoteCodex.autoReloadRemoteWindow`
+- `autodl.remoteCodex.postInstallActionEnabled`
+- `autodl.remoteCodex.postInstallAction`
 - `autodl.remoteCodex.extensionId`
 - `autodl.remoteCodex.authJsonPath`
 - `autodl.remoteCodex.installTimeoutSeconds`
@@ -209,7 +210,7 @@ Important behavior:
 - If remote Marketplace installation fails after the server CLI exists, AutoDL falls back to copying the locally installed extension to the remote Linux extension directory through a compressed tar stream, writes remote extension metadata, and restores executable bits for bundled Linux tools.
 - Codex installation writes remote proxy settings only when they are missing or do not match the configured values. Once they match, it skips rewriting them until you explicitly change or remove them with `AutoDL: Toggle Remote Proxy Settings`.
 - If `autodl.remoteCodex.authJsonPath` is set, AutoDL uploads that local `auth.json` to `~/.codex/auth.json` after a successful remote Codex install, and downloads the remote file back to the same local path before wiping a reachable running instance during release. Leave the setting empty to disable auth upload and download.
-- After a successful installation, AutoDL asks whether to reload the current matching Remote SSH window, or open the AutoDL remote folder in a new window, so the remote extension state can refresh without surprising window stalls. Set `autodl.remoteCodex.autoReloadRemoteWindow` to `true` to make that reload/open step automatic.
+- After a successful installation, `autodl.remoteCodex.postInstallActionEnabled` controls whether AutoDL runs a post-install window action. When enabled, `autodl.remoteCodex.postInstallAction` chooses the action: the default `reconnect` requests a fresh AutoDL Remote SSH window and then asks before closing the old matching remote window, while `reload` keeps the older in-place reload behavior. Disable the enabled switch, or set the action to `none`, to only show a manual reconnect/open prompt.
 
 Toggle `AutoDL: Toggle Remote Codex Auto Install`, or set `autodl.remoteCodex.autoInstall`, to install Codex automatically after Connect.
 
@@ -248,8 +249,8 @@ The CI workflow builds the VSIX on every push, pull request, or manual workflow 
 To publish a GitHub Release with the compiled VSIX attached, push a version tag:
 
 ```powershell
-git tag v0.2.20
-git push origin v0.2.20
+git tag v0.2.22
+git push origin v0.2.22
 ```
 
 The release job creates a GitHub Release for the tag, uploads the platform VSIX files, and uses the matching `CHANGELOG.md` section as the release notes.

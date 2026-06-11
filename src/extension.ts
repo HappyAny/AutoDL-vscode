@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { spawn } from "node:child_process";
 
 import * as vscode from "vscode";
 
@@ -1530,28 +1531,165 @@ async function reloadRemoteWindowAfterCodexInstall(
       folder.uri.authority.toLowerCase() === targetAuthority,
   );
 
-  if (!settings.remoteCodex.autoReloadRemoteWindow) {
-    output.appendLine("Remote window auto reload is disabled.");
-    const action = currentWindowIsTarget ? "Reload Remote Window" : "Open Remote Window";
+  let postInstallAction = settings.remoteCodex.postInstallAction;
+
+  if (!settings.remoteCodex.postInstallActionEnabled || postInstallAction === "none") {
+    output.appendLine("Remote window post-install action is disabled.");
+    const action = currentWindowIsTarget ? "Reconnect Remote Window" : "Open Remote Window";
     const choice = await vscode.window.showInformationMessage(
-      `AutoDL remote Codex extension installed on ${alias}. Reload the Remote SSH window to enable it.`,
+      `AutoDL remote Codex extension installed on ${alias}. Reconnect the Remote SSH window to enable it cleanly.`,
       action,
     );
     if (choice !== action) {
       return;
     }
+    postInstallAction = "reconnect";
   }
 
-  if (currentWindowIsTarget) {
+  if (postInstallAction === "reload") {
     output.appendLine(`Reloading current Remote SSH window: ${remoteUri.toString()}`);
-    await vscode.commands.executeCommand("workbench.action.reloadWindow");
+    if (currentWindowIsTarget) {
+      await vscode.commands.executeCommand("workbench.action.reloadWindow");
+    } else {
+      await vscode.commands.executeCommand("vscode.openFolder", remoteUri, {
+        forceNewWindow: true,
+      });
+    }
     return;
   }
 
-  output.appendLine(`Opening Remote SSH window to refresh extension state: ${remoteUri.toString()}`);
-  await vscode.commands.executeCommand("vscode.openFolder", remoteUri, {
-    forceNewWindow: true,
-  });
+  output.appendLine(`Reconnecting Remote SSH window: ${remoteUri.toString()}`);
+  const replacementStarted = await openReplacementRemoteWindow(remoteUri);
+  if (currentWindowIsTarget) {
+    if (!replacementStarted) {
+      output.appendLine("Replacement Remote SSH window was not started; keeping current window open.");
+      return;
+    }
+    output.appendLine("Replacement Remote SSH window launch was requested.");
+    const choice = await vscode.window.showInformationMessage(
+      "AutoDL requested a new Remote SSH window. Close this old remote window after you confirm the new one is open.",
+      "Close Old Window",
+    );
+    if (choice === "Close Old Window") {
+      await vscode.commands.executeCommand("workbench.action.closeWindow");
+    }
+  }
+}
+
+async function openReplacementRemoteWindow(remoteUri: vscode.Uri): Promise<boolean> {
+  if (await spawnCodeNewWindow(remoteUri)) {
+    return true;
+  }
+
+  const externalUri = remoteSshExternalUri(remoteUri);
+  output.appendLine(`VS Code CLI launch failed; opening external URI: ${externalUri.toString()}`);
+  try {
+    return await vscode.env.openExternal(externalUri);
+  } catch (error) {
+    output.appendLine(`Failed to open external Remote SSH URI: ${formatError(error)}`);
+    return false;
+  }
+}
+
+async function spawnCodeNewWindow(remoteUri: vscode.Uri): Promise<boolean> {
+  const args = ["--new-window", remoteUri.toString(true)];
+  for (const command of codeCliCandidates()) {
+    output.appendLine(`Opening replacement Remote SSH window with VS Code CLI: ${command}`);
+    if (await spawnCodeCommand(command, args)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function spawnCodeCommand(command: string, args: string[]): Promise<boolean> {
+  const invocation = codeCommandInvocation(command, args);
+  try {
+    const child = spawn(invocation.command, invocation.args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (data: Buffer) => {
+      stdout += data.toString();
+    });
+    child.stderr?.on("data", (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    return await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (value: boolean) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const timer = setTimeout(() => {
+        output.appendLine(`VS Code CLI did not exit after 5s; not treating it as a confirmed launch: ${command}`);
+        child.kill();
+        finish(false);
+      }, 5000);
+      child.once("error", (error) => {
+        output.appendLine(`Failed to launch VS Code CLI ${command}: ${formatError(error)}`);
+        finish(false);
+      });
+      child.once("exit", (code) => {
+        if (code === 0) {
+          finish(true);
+          return;
+        }
+        output.appendLine(`VS Code CLI exited before opening a window: ${command} exit=${code}`);
+        const details = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n");
+        if (details) {
+          output.appendLine(details.slice(0, 2000));
+        }
+        finish(false);
+      });
+    });
+  } catch (error) {
+    output.appendLine(`Failed to launch VS Code CLI ${command}: ${formatError(error)}`);
+    return false;
+  }
+}
+
+function codeCommandInvocation(command: string, args: string[]): { command: string; args: string[] } {
+  if (process.platform !== "win32" || !/\.(cmd|bat)$/i.test(command)) {
+    return { command, args };
+  }
+
+  const commandLine = [command, ...args].map(quoteWindowsCommandArg).join(" ");
+  return {
+    command: process.env.ComSpec || "cmd.exe",
+    args: ["/d", "/s", "/c", commandLine],
+  };
+}
+
+function quoteWindowsCommandArg(value: string): string {
+  return `"${value.replace(/(["^&|<>%])/g, "^$1")}"`;
+}
+
+function codeCliCandidates(): string[] {
+  const commandName = vscode.env.appName.toLowerCase().includes("insiders")
+    ? "code-insiders"
+    : "code";
+  const extension = process.platform === "win32" ? ".cmd" : "";
+  const candidates = [
+    path.join(path.dirname(process.execPath), "bin", `${commandName}${extension}`),
+    `${commandName}${extension}`,
+  ];
+  if (commandName !== "code") {
+    candidates.push(process.platform === "win32" ? "code.cmd" : "code");
+  }
+  return [...new Set(candidates)];
+}
+
+function remoteSshExternalUri(remoteUri: vscode.Uri): vscode.Uri {
+  const pathPart = encodeURI(remoteUri.path || "/root");
+  return vscode.Uri.parse(`${vscode.env.uriScheme}://vscode-remote/${remoteUri.authority}${pathPart}`);
 }
 
 async function resolveInstanceAlias(

@@ -57,11 +57,14 @@ export interface RemoteProxySettings {
 
 export interface RemoteCodexSettings {
   autoInstall: boolean;
-  autoReloadRemoteWindow: boolean;
+  postInstallActionEnabled: boolean;
+  postInstallAction: RemoteCodexPostInstallAction;
   extensionId: string;
   authJsonPath: string;
   installTimeoutMs: number;
 }
+
+export type RemoteCodexPostInstallAction = "none" | "reload" | "reconnect";
 
 export interface RemoteCommandConfig {
   name: string;
@@ -105,7 +108,10 @@ export function getSettings(): ExtensionSettings {
     },
     remoteCodex: {
       autoInstall: config.get<boolean>("remoteCodex.autoInstall", false),
-      autoReloadRemoteWindow: config.get<boolean>("remoteCodex.autoReloadRemoteWindow", false),
+      postInstallActionEnabled: config.get<boolean>("remoteCodex.postInstallActionEnabled", true),
+      postInstallAction: normalizeRemoteCodexPostInstallAction(
+        config.get<string>("remoteCodex.postInstallAction", "reconnect"),
+      ),
       extensionId: config.get<string>("remoteCodex.extensionId", "openai.chatgpt").trim(),
       authJsonPath: config.get<string>("remoteCodex.authJsonPath", "").trim(),
       installTimeoutMs: config.get<number>("remoteCodex.installTimeoutSeconds", 600) * 1000,
@@ -269,6 +275,14 @@ function normalizeQuickCreateConfig(value: Partial<QuickCreateConfig>): QuickCre
     ...(value.profiles || {}),
   };
   return { defaults, profiles };
+}
+
+function normalizeRemoteCodexPostInstallAction(value: string): RemoteCodexPostInstallAction {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "none" || normalized === "reload" || normalized === "reconnect") {
+    return normalized;
+  }
+  return "reconnect";
 }
 
 function normalizeRemoteCommands(value: unknown): RemoteCommandConfig[] {

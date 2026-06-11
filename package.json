@@ -2,7 +2,7 @@
   "name": "autodl-vscode",
   "displayName": "AutoDL Control",
   "description": "Quickly create, connect, stop, and release AutoDL Pro instances from VS Code.",
-  "version": "0.2.20",
+  "version": "0.2.22",
   "publisher": "happyan",
   "license": "MIT",
   "icon": "media/autodl-icon.png",
@@ -410,10 +410,20 @@
           "default": false,
           "description": "Automatically install the configured Codex VS Code extension on the selected AutoDL remote after Remote SSH connect."
         },
-        "autodl.remoteCodex.autoReloadRemoteWindow": {
+        "autodl.remoteCodex.postInstallActionEnabled": {
           "type": "boolean",
-          "default": false,
-          "description": "Automatically reload the current matching Remote SSH window, or open the remote folder in a new window, after installing the configured Codex VS Code extension. Disabled by default to avoid Remote SSH reload stalls."
+          "default": true,
+          "description": "Run the configured Codex post-install action after installing the remote Codex VS Code extension. Disable to only show a manual reconnect/open prompt."
+        },
+        "autodl.remoteCodex.postInstallAction": {
+          "type": "string",
+          "enum": [
+            "none",
+            "reload",
+            "reconnect"
+          ],
+          "default": "reconnect",
+          "description": "Action after installing the configured Codex VS Code extension. reconnect opens a new Remote SSH window and closes the old matching remote window; reload keeps the old reload behavior; none only prompts."
         },
         "autodl.remoteCodex.extensionId": {
           "type": "string",
