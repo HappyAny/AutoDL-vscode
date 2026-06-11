@@ -1,5 +1,3 @@
-import * as vscode from "vscode";
-
 import { RemoteProxySettings } from "./config";
 
 export interface ResolvedRemoteProxy {
@@ -9,7 +7,6 @@ export interface ResolvedRemoteProxy {
   remoteForwardPort: number;
 }
 
-const DEFAULT_PROXY_URL = "http://127.0.0.1:7890";
 const SUPPORTED_PROXY_PROTOCOLS = new Set(["http:", "https:", "socks:", "socks4:", "socks5:"]);
 
 export function resolveRemoteProxy(settings: RemoteProxySettings): ResolvedRemoteProxy | undefined {
@@ -17,11 +14,14 @@ export function resolveRemoteProxy(settings: RemoteProxySettings): ResolvedRemot
     return undefined;
   }
 
-  const proxyUrl = preferredProxyUrl(settings.proxyUrl);
+  const proxyUrl = settings.proxyUrl.trim();
+  if (!proxyUrl) {
+    return undefined;
+  }
   const parsed = parseProxyUrl(proxyUrl);
   return {
     proxyUrl: parsed.normalizedUrl,
-    localHost: parsed.host,
+    localHost: normalizeForwardHost(settings.localForwardHost || "127.0.0.1"),
     localPort: parsed.port,
     remoteForwardPort:
       Number.isInteger(settings.remoteForwardPort) && settings.remoteForwardPort > 0
@@ -41,14 +41,6 @@ export function remoteProxySettingsPayload(proxy: ResolvedRemoteProxy): Record<s
 export function remoteProxyUrl(proxy: ResolvedRemoteProxy): string {
   const protocol = new URL(proxy.proxyUrl).protocol;
   return `${protocol}//127.0.0.1:${proxy.remoteForwardPort}`;
-}
-
-function preferredProxyUrl(configuredProxyUrl: string): string {
-  const vscodeProxy = vscode.workspace
-    .getConfiguration("http")
-    .get<string>("proxy", "")
-    .trim();
-  return configuredProxyUrl || vscodeProxy || DEFAULT_PROXY_URL;
 }
 
 function parseProxyUrl(value: string): { normalizedUrl: string; host: string; port: number } {
@@ -83,9 +75,20 @@ function parseProxyUrl(value: string): { normalizedUrl: string; host: string; po
 function normalizeProxyUrl(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) {
-    return DEFAULT_PROXY_URL;
+    throw new Error("Proxy URL cannot be empty.");
   }
   return /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed) ? trimmed : `http://${trimmed}`;
+}
+
+function normalizeForwardHost(host: string): string {
+  if (!host.trim() || /[\r\n]/.test(host)) {
+    throw new Error("RemoteForward local host is invalid.");
+  }
+  const normalized = host.toLowerCase();
+  if (normalized === "localhost" || normalized === "::1" || normalized === "[::1]") {
+    return "127.0.0.1";
+  }
+  return host.trim();
 }
 
 function normalizeLoopbackHost(host: string): string {

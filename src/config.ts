@@ -43,6 +43,7 @@ export interface ExtensionSettings {
   injectSshPublicKeyOnCreate: boolean;
   remoteProxy: RemoteProxySettings;
   remoteCodex: RemoteCodexSettings;
+  remoteCommands: RemoteCommandsSettings;
   sync: FolderSyncSettings;
   quickCreate: QuickCreateConfig;
 }
@@ -50,6 +51,7 @@ export interface ExtensionSettings {
 export interface RemoteProxySettings {
   enabled: boolean;
   proxyUrl: string;
+  localForwardHost: string;
   remoteForwardPort: number;
 }
 
@@ -59,6 +61,23 @@ export interface RemoteCodexSettings {
   extensionId: string;
   authJsonPath: string;
   installTimeoutMs: number;
+}
+
+export interface RemoteCommandConfig {
+  name: string;
+  type: "command" | "localScript";
+  command?: string;
+  localPath?: string;
+  remotePath?: string;
+  cwd?: string;
+  timeoutSeconds?: number;
+}
+
+export interface RemoteCommandsSettings {
+  commands: RemoteCommandConfig[];
+  defaultRemoteDirectory: string;
+  defaultCwd: string;
+  defaultTimeoutMs: number;
 }
 
 export interface FolderSyncSettings {
@@ -80,15 +99,26 @@ export function getSettings(): ExtensionSettings {
     injectSshPublicKeyOnCreate: config.get<boolean>("injectSshPublicKeyOnCreate", true),
     remoteProxy: {
       enabled: config.get<boolean>("remoteProxy.enabled", true),
-      proxyUrl: config.get<string>("remoteProxy.proxyUrl", "http://127.0.0.1:7890").trim(),
+      proxyUrl: config.get<string>("remoteProxy.proxyUrl", "").trim(),
+      localForwardHost: config.get<string>("remoteProxy.localForwardHost", "127.0.0.1").trim(),
       remoteForwardPort: config.get<number>("remoteProxy.remoteForwardPort", 0),
     },
     remoteCodex: {
       autoInstall: config.get<boolean>("remoteCodex.autoInstall", false),
-      autoReloadRemoteWindow: config.get<boolean>("remoteCodex.autoReloadRemoteWindow", true),
+      autoReloadRemoteWindow: config.get<boolean>("remoteCodex.autoReloadRemoteWindow", false),
       extensionId: config.get<string>("remoteCodex.extensionId", "openai.chatgpt").trim(),
       authJsonPath: config.get<string>("remoteCodex.authJsonPath", "").trim(),
       installTimeoutMs: config.get<number>("remoteCodex.installTimeoutSeconds", 600) * 1000,
+    },
+    remoteCommands: {
+      commands: normalizeRemoteCommands(
+        config.get<RemoteCommandConfig[]>("remoteCommands.commands", []),
+      ),
+      defaultRemoteDirectory: config
+        .get<string>("remoteCommands.defaultRemoteDirectory", "/root/autodl-scripts")
+        .trim(),
+      defaultCwd: config.get<string>("remoteCommands.defaultCwd", "/root").trim(),
+      defaultTimeoutMs: config.get<number>("remoteCommands.defaultTimeoutSeconds", 3600) * 1000,
     },
     sync: {
       localFolder: config.get<string>("sync.localFolder", "").trim(),
@@ -239,6 +269,46 @@ function normalizeQuickCreateConfig(value: Partial<QuickCreateConfig>): QuickCre
     ...(value.profiles || {}),
   };
   return { defaults, profiles };
+}
+
+function normalizeRemoteCommands(value: unknown): RemoteCommandConfig[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return undefined;
+      }
+      const raw = item as Partial<RemoteCommandConfig>;
+      const name = typeof raw.name === "string" ? raw.name.trim() : "";
+      const type = raw.type === "localScript" ? "localScript" : "command";
+      const command = typeof raw.command === "string" ? raw.command.trim() : "";
+      const localPath = typeof raw.localPath === "string" ? raw.localPath.trim() : "";
+      if (!name) {
+        return undefined;
+      }
+      if (type === "command" && !command) {
+        return undefined;
+      }
+      if (type === "localScript" && !localPath) {
+        return undefined;
+      }
+      return {
+        name,
+        type,
+        ...(command ? { command } : {}),
+        ...(localPath ? { localPath } : {}),
+        ...(typeof raw.remotePath === "string" && raw.remotePath.trim()
+          ? { remotePath: raw.remotePath.trim() }
+          : {}),
+        ...(typeof raw.cwd === "string" && raw.cwd.trim() ? { cwd: raw.cwd.trim() } : {}),
+        ...(Number.isFinite(Number(raw.timeoutSeconds)) && Number(raw.timeoutSeconds) > 0
+          ? { timeoutSeconds: Number(raw.timeoutSeconds) }
+          : {}),
+      };
+    })
+    .filter((item): item is RemoteCommandConfig => Boolean(item));
 }
 
 function stringValue(value: unknown, fieldName: string): string {

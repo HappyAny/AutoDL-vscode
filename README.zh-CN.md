@@ -76,6 +76,10 @@ code --install-extension ./dist/autodl-control.vsix --force
 - `AutoDL: Clean SSH Config`
 - `AutoDL: Refresh Instances`
 - `AutoDL: Refresh GPU and Image Catalogs`
+- `AutoDL: Remote Tools`
+- `AutoDL: Configure Remote Proxy`
+- `AutoDL: Configure Remote Commands`
+- `AutoDL: Run Remote Command`
 - `AutoDL: Set Sync Folders`
 - `AutoDL: Start Folder Sync`
 - `AutoDL: Upload Sync Folder`
@@ -89,7 +93,7 @@ code --install-extension ./dist/autodl-control.vsix --force
 
 实例列表中的操作：
 
-- 运行中实例：连接 Remote SSH、打开 Jupyter、上传同步目录、关机、释放。
+- 运行中实例：连接 Remote SSH、打开 Jupyter、运行远端命令、上传同步目录、关机、释放。
 - 已关机实例：开机、释放。
 
 通过扩展释放可连接的运行中实例时，AutoDL Control 会先通过 SSH 清空远端 home 目录内容，包括 `/root` 下的 Codex 和 VS Code server 数据，并确认远端 home 目录已经为空，然后再关机并释放实例。AutoDL 输出面板会记录每一步释放日志，并打印远端验证结果，包括剩余条目数量。如果确认时仍发现残留条目，释放会中止。已经关机的实例无法通过 SSH 清理，释放时依赖 AutoDL 清空实例数据。释放后，扩展会删除对应的 `Host autodl-<instance>` 托管 SSH 配置块，并清理匹配的 VS Code 最近打开 Remote - SSH 记录。也可以使用 `AutoDL: Clean SSH Config` 清理所有陈旧的 AutoDL 托管配置块。
@@ -102,7 +106,7 @@ GPU 和镜像列表会缓存在 VS Code global storage 中。点击 AutoDL 视�
 
 AutoDL 视图标题栏里的文件夹图标也会执行同一个目录配置命令，可以直接重新选择本地和远端同步目录。
 
-运行中实例右侧的 cloud-upload 按钮，或者 `AutoDL: Upload Sync Folder` 命令，会执行一次性本地到远端上传。它复用同一组本地和远端目录配置，会覆盖远端同相对路径文件，但不会删除远端独有文件。
+运行中实例右键菜单里的上传动作，或者 `AutoDL: Upload Sync Folder` 命令，会执行一次性本地到远端上传。它复用同一组本地和远端目录配置，会覆盖远端同相对路径文件，但不会删除远端独有文件。
 
 同步策略偏保守：
 
@@ -143,12 +147,17 @@ Token 存在 VS Code SecretStorage 中。`AUTODL_TOKEN` 可作为本地环境变
 - `autodl.injectSshPublicKeyOnCreate`
 - `autodl.remoteProxy.enabled`
 - `autodl.remoteProxy.proxyUrl`
+- `autodl.remoteProxy.localForwardHost`
 - `autodl.remoteProxy.remoteForwardPort`
 - `autodl.remoteCodex.autoInstall`
 - `autodl.remoteCodex.autoReloadRemoteWindow`
 - `autodl.remoteCodex.extensionId`
 - `autodl.remoteCodex.authJsonPath`
 - `autodl.remoteCodex.installTimeoutSeconds`
+- `autodl.remoteCommands.commands`
+- `autodl.remoteCommands.defaultRemoteDirectory`
+- `autodl.remoteCommands.defaultCwd`
+- `autodl.remoteCommands.defaultTimeoutSeconds`
 - `autodl.sync.localFolder`
 - `autodl.sync.remoteFolder`
 - `autodl.sync.intervalSeconds`
@@ -168,13 +177,13 @@ Quick Create 和 Select Server 只创建实例并刷新列表，不会自动连�
 
 托管的 `autodl-*` SSH host 使用独立的 `~/.ssh/autodl-vscode-known_hosts` 文件，避免 AutoDL 代理端点的 host key 交互阻塞上传或同步。
 
-托管的 `autodl-*` SSH host 默认还会写入本地代理的远程转发：
+托管的 `autodl-*` SSH host 只有在配置了 `autodl.remoteProxy.proxyUrl` 时，才会写入本地代理的远程转发：
 
 ```sshconfig
 RemoteForward 7890 127.0.0.1:7890
 ```
 
-这样远端 VS Code server 可以通过现有 SSH 连接使用本机 7890 端口上的 HTTP 或 SOCKS5 代理。扩展不会修改本地 VS Code 代理设置。运行 `AutoDL: Toggle Remote Proxy Settings`，可以给选中的实例写入远端 VS Code 设置；再次运行会移除同一组键：
+这样远端 VS Code server 可以通过现有 SSH 连接使用本机 HTTP 或 SOCKS 代理。扩展不会读取或修改本地 VS Code 代理设置，也不再默认假设 7890 端口。可以从 `AutoDL: Remote Tools` -> `Configure Proxy` 保存代理地址、SSH `RemoteForward` 的本地 host 和可选远端转发端口。如果 `autodl.remoteProxy.proxyUrl` 为空，AutoDL 不会写入代理设置或 SSH 转发。运行 `AutoDL: Toggle Remote Proxy Settings`，可以给选中的实例写入远端 VS Code 设置；再次运行会移除同一组键：
 
 ```json
 {
@@ -184,11 +193,11 @@ RemoteForward 7890 127.0.0.1:7890
 }
 ```
 
-代理地址可通过 `autodl.remoteProxy.proxyUrl` 修改；支持 `http`、`https`、`socks`、`socks4` 和 `socks5` URL。
+代理地址可通过 `autodl.remoteProxy.proxyUrl` 修改；支持 `http`、`https`、`socks`、`socks4` 和 `socks5` URL。`autodl.remoteProxy.localForwardHost` 默认是 `127.0.0.1`。`autodl.remoteProxy.remoteForwardPort` 为 `0` 时，远端端口跟随代理 URL 里的端口。
 
 ### 远端代理和 Codex
 
-从视图顶部运行 `AutoDL: Prepare Remote Proxy and Codex`，可以一次性启用远端代理并安装配置的 Codex VS Code 扩展。如果远端代理设置已经存在，再次运行会移除代理设置并跳过安装。实例右键动作保持分开：`AutoDL: Toggle Remote Proxy Settings` 只切换代理设置，`AutoDL: Install Remote Codex Extension` 只安装配置的扩展。
+从视图顶部运行 `AutoDL: Remote Tools`，会打开一个合并菜单：`Configure Proxy`、`Install / Prepare Codex`、`Configure Remote Commands`、`Open AutoDL Settings`。实例右键动作保持分开：`AutoDL: Toggle Remote Proxy Settings` 只切换代理设置，`AutoDL: Install Remote Codex Extension` 只安装配置的扩展。
 
 默认扩展 ID 是 `openai.chatgpt`。安装会通过 SSH 调用远端 VS Code server CLI，兼容旧版和新版 VS Code server 目录，并用远端扩展列表和远端扩展目录双重校验。
 
@@ -198,11 +207,19 @@ RemoteForward 7890 127.0.0.1:7890
 - 若远端 server CLI 已存在但 Marketplace 安装没有通过校验，AutoDL 会自动用压缩 tar 流复制本机已安装扩展到远端 Linux 扩展目录，写入远端扩展安装元数据，并恢复捆绑 Linux 工具的可执行权限。
 - Codex 安装流程只有在远端代理设置缺失或不等于当前配置值时才会写入。值已经正确时会跳过重写，直到你用 `AutoDL: Toggle Remote Proxy Settings` 显式修改或移除。
 - 如果设置了 `autodl.remoteCodex.authJsonPath`，AutoDL 会在远端 Codex 安装成功后，把这个本地 `auth.json` 上传到 `~/.codex/auth.json`；释放可连接的运行中实例并清空 home 前，如果远端存在 `~/.codex/auth.json`，会先下载覆盖到同一个本地路径。该设置为空时不处理 auth 上传和下载。
-- 安装成功后，如果当前窗口就是目标 Remote SSH 窗口，AutoDL 会自动 reload；如果命令来自其他窗口，则会打开对应 AutoDL 远端目录窗口，让远端扩展状态刷新。可将 `autodl.remoteCodex.autoReloadRemoteWindow` 设为 `false` 关闭这个行为。
+- 安装成功后，AutoDL 会询问是否 reload 当前匹配的 Remote SSH 窗口；如果命令来自其他窗口，则询问是否打开对应 AutoDL 远端目录窗口，让远端扩展状态刷新，同时避免意外卡住当前窗口。可将 `autodl.remoteCodex.autoReloadRemoteWindow` 设为 `true` 让这个 reload/open 步骤自动执行。
 
 运行 `AutoDL: Toggle Remote Codex Auto Install`，或修改 `autodl.remoteCodex.autoInstall`，可以控制连接后是否自动安装。
 
 VS Code Remote SSH 没有可靠的扩展 API 可以自动输入密码。要免手动登录，请在创建实例前运行 `AutoDL: Set SSH Public Key`。扩展会通过创建实例的启动命令把公钥写入 `/root/.ssh/authorized_keys`，并把对应私钥路径写入托管 SSH 配置。
+
+### 远端快捷命令
+
+点击运行中实例右侧的 terminal 图标，或运行 `AutoDL: Run Remote Command`，可以在选中的 AutoDL 实例上执行命令。Quick Pick 顶部固定提供 `Enter Remote Command...` 和 `Select Local .sh Script...`，下面才是 `autodl.remoteCommands.commands` 里保存过的命令。
+
+临时输入命令或选择本地 `.sh` 后，AutoDL 会询问是否保存；选择保存时会要求输入显示名称。保存后的命令可以在设置里编辑，也可以通过 `AutoDL: Remote Tools` -> `Configure Remote Commands` 管理。
+
+本地 `.sh` 会上传到 `autodl.remoteCommands.defaultRemoteDirectory`，写入远端脚本路径，执行 `chmod +x`，再从 `autodl.remoteCommands.defaultCwd` 运行。
 
 ## 仓库安全
 
@@ -227,8 +244,8 @@ CI 会在每次 push、pull request 或手动运行时构建 VSIX。需要测试
 发布 GitHub Release 并附带编译好的 VSIX 时，推送版本 tag：
 
 ```bash
-git tag v0.2.19
-git push origin v0.2.19
+git tag v0.2.20
+git push origin v0.2.20
 ```
 
 Release job 会为该 tag 创建 GitHub Release，上传各平台 VSIX，并把 `CHANGELOG.md` 中匹配版本的小节作为 Release notes。

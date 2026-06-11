@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.20
+
+- Removed the implicit 7890 and VS Code `http.proxy` fallbacks; AutoDL now only configures proxy forwarding when `autodl.remoteProxy.proxyUrl` is set.
+- Added `autodl.remoteProxy.localForwardHost` to control the local host used in managed SSH `RemoteForward` entries.
+- Added a combined `AutoDL: Remote Tools` menu for proxy configuration, Codex preparation, remote command configuration, and settings.
+- Added reusable remote commands, including ad-hoc shell command input and local `.sh` upload with executable permission before remote execution.
+- Changed remote Codex post-install reload to opt-in by default, with a manual reload/open prompt to avoid Remote SSH window stalls.
+
 ## 0.2.19
 
 - Added optional `autodl.remoteCodex.authJsonPath` for Codex `auth.json` handoff.

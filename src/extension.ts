@@ -34,6 +34,7 @@ import {
   mergeStartCommandWithSshKey,
   profileQuickPickItems,
   promptAndStoreToken,
+  RemoteCommandConfig,
 } from "./config";
 import { InstancesProvider, InstanceItem } from "./instancesView";
 import {
@@ -148,6 +149,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("autodl.prepareRemote", (item?: InstanceItem) =>
       prepareRemote(context, item),
     ),
+    vscode.commands.registerCommand("autodl.configureProxy", () => configureProxySettings()),
     vscode.commands.registerCommand("autodl.writeRemoteProxySettings", (item?: InstanceItem) =>
       writeRemoteProxySettings(context, item),
     ),
@@ -157,6 +159,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("autodl.toggleRemoteCodexAutoInstall", () =>
       toggleRemoteCodexAutoInstall(),
     ),
+    vscode.commands.registerCommand("autodl.configureRemoteCommands", () =>
+      configureRemoteCommands(),
+    ),
+    vscode.commands.registerCommand("autodl.runRemoteCommand", (item?: InstanceItem) =>
+      runRemoteCommand(context, item),
+    ),
+    vscode.commands.registerCommand("autodl.openSettings", () => openAutoDLSettings()),
     vscode.commands.registerCommand("autodl.setSyncFolders", () => setSyncFolders()),
     vscode.commands.registerCommand("autodl.startFolderSync", (item?: InstanceItem) =>
       startFolderSyncForInstance(context, item),
@@ -812,6 +821,12 @@ async function writeRemoteProxySettings(
   item?: InstanceItem,
 ): Promise<void> {
   await runSafely(async () => {
+    if (!resolveRemoteProxy(getSettings().remoteProxy)) {
+      void vscode.window.showInformationMessage(
+        "AutoDL remote proxy is not configured. Set autodl.remoteProxy.proxyUrl first.",
+      );
+      return;
+    }
     const resolved = await resolveInstanceAlias(context, item);
     if (!resolved) {
       return;
@@ -825,16 +840,55 @@ async function prepareRemote(
   item?: InstanceItem,
 ): Promise<void> {
   await runSafely(async () => {
-    const resolved = await resolveInstanceAlias(context, item);
-    if (!resolved) {
+    const picked = await vscode.window.showQuickPick(
+      [
+        {
+          label: "$(plug) Configure Proxy",
+          description: "local and forwarded proxy address",
+          id: "proxy",
+        },
+        {
+          label: "$(extensions) Install / Prepare Codex",
+          description: "prepare the selected remote VS Code session",
+          id: "codex",
+        },
+        {
+          label: "$(terminal) Configure Remote Commands",
+          description: "saved commands and local .sh scripts",
+          id: "commands",
+        },
+        {
+          label: "$(settings-gear) Open AutoDL Settings",
+          description: "all extension settings",
+          id: "settings",
+        },
+      ] satisfies Array<vscode.QuickPickItem & { id: string }>,
+      {
+        title: "AutoDL Remote Tools",
+        placeHolder: "Choose what to configure",
+        ignoreFocusOut: true,
+      },
+    );
+    if (!picked) {
       return;
     }
-    const proxyResult = await toggleRemoteProxyForAlias(resolved.alias, resolved.settings);
-    if (proxyResult !== "enabled") {
-      output.appendLine("Remote proxy was disabled; skipped Codex extension install.");
+    if (picked.id === "proxy") {
+      await promptAndSaveProxySettings();
       return;
     }
-    await installRemoteCodexForAlias(resolved.alias, resolved.settings, "manual");
+    if (picked.id === "codex") {
+      const resolved = await resolveInstanceAlias(context, item);
+      if (!resolved) {
+        return;
+      }
+      await installRemoteCodexForAlias(resolved.alias, resolved.settings, "manual");
+      return;
+    }
+    if (picked.id === "commands") {
+      await configureRemoteCommandsCore();
+      return;
+    }
+    await openAutoDLSettings();
   });
 }
 
@@ -860,6 +914,488 @@ async function toggleRemoteCodexAutoInstall(): Promise<void> {
       `AutoDL remote Codex auto install ${next ? "enabled" : "disabled"}.`,
     );
   });
+}
+
+async function configureProxySettings(): Promise<void> {
+  await runSafely(async () => {
+    await promptAndSaveProxySettings();
+  });
+}
+
+async function promptAndSaveProxySettings(): Promise<boolean> {
+  const settings = getSettings();
+  const proxyUrl = await vscode.window.showInputBox({
+    title: "AutoDL Remote Proxy URL",
+    prompt: "Local proxy URL forwarded to the remote. Leave empty to disable AutoDL proxy forwarding.",
+    value: settings.remoteProxy.proxyUrl,
+    placeHolder: "http://127.0.0.1:7890 or socks5://127.0.0.1:7890",
+    ignoreFocusOut: true,
+    validateInput: (value) => {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return undefined;
+      }
+      try {
+        resolveRemoteProxy({
+          enabled: true,
+          proxyUrl: trimmed,
+          localForwardHost: settings.remoteProxy.localForwardHost,
+          remoteForwardPort: settings.remoteProxy.remoteForwardPort,
+        });
+        return undefined;
+      } catch (error) {
+        return formatError(error);
+      }
+    },
+  });
+  if (proxyUrl === undefined) {
+    return false;
+  }
+
+  if (!proxyUrl.trim()) {
+    await vscode.workspace
+      .getConfiguration("autodl")
+      .update("remoteProxy.proxyUrl", "", vscode.ConfigurationTarget.Global);
+    void vscode.window.showInformationMessage(
+      "AutoDL remote proxy URL cleared; proxy forwarding will not be configured.",
+    );
+    return true;
+  }
+
+  const localForwardHost = await vscode.window.showInputBox({
+    title: "AutoDL SSH RemoteForward Local Host",
+    prompt: "Host on this computer that SSH should forward to from the remote.",
+    value: settings.remoteProxy.localForwardHost || "127.0.0.1",
+    placeHolder: "127.0.0.1",
+    ignoreFocusOut: true,
+    validateInput: (value) => {
+      if (!value.trim() || /[\r\n]/.test(value)) {
+        return "RemoteForward local host cannot be empty or contain line breaks.";
+      }
+      return undefined;
+    },
+  });
+  if (localForwardHost === undefined) {
+    return false;
+  }
+
+  const remoteForwardPort = await vscode.window.showInputBox({
+    title: "AutoDL Remote Proxy Forward Port",
+    prompt: "Use 0 to reuse the port from the proxy URL.",
+    value: String(settings.remoteProxy.remoteForwardPort || 0),
+    ignoreFocusOut: true,
+    validateInput: (value) => {
+      const parsed = Number(value.trim());
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
+        return "Remote forward port must be 0 or an integer between 1 and 65535.";
+      }
+      return undefined;
+    },
+  });
+  if (remoteForwardPort === undefined) {
+    return false;
+  }
+
+  const parsedRemoteForwardPort = Number(remoteForwardPort.trim());
+  const config = vscode.workspace.getConfiguration("autodl");
+  await config.update("remoteProxy.enabled", true, vscode.ConfigurationTarget.Global);
+  await config.update("remoteProxy.proxyUrl", proxyUrl.trim(), vscode.ConfigurationTarget.Global);
+  await config.update(
+    "remoteProxy.localForwardHost",
+    localForwardHost.trim(),
+    vscode.ConfigurationTarget.Global,
+  );
+  await config.update(
+    "remoteProxy.remoteForwardPort",
+    parsedRemoteForwardPort,
+    vscode.ConfigurationTarget.Global,
+  );
+
+  const proxy = resolveRemoteProxy({
+    enabled: true,
+    proxyUrl: proxyUrl.trim(),
+    localForwardHost: localForwardHost.trim(),
+    remoteForwardPort: parsedRemoteForwardPort,
+  });
+  const message = proxy
+    ? `AutoDL proxy configured: remote ${proxy.remoteForwardPort} -> ${proxy.localHost}:${proxy.localPort}`
+    : "AutoDL remote proxy URL is empty; proxy forwarding will not be configured.";
+  void vscode.window.showInformationMessage(message);
+  return true;
+}
+
+async function configureRemoteCommands(): Promise<void> {
+  await runSafely(async () => {
+    await configureRemoteCommandsCore();
+  });
+}
+
+async function configureRemoteCommandsCore(): Promise<void> {
+  const savedCommands = getSettings().remoteCommands.commands;
+  const picked = await vscode.window.showQuickPick(
+    [
+      {
+        label: "$(terminal) Add Remote Command",
+        description: "save a shell command",
+        id: "addCommand",
+      },
+      {
+        label: "$(file-code) Add Local .sh Script",
+        description: "save a script upload command",
+        id: "addScript",
+      },
+      {
+        label: "$(trash) Remove Saved Command",
+        description: `${savedCommands.length} saved`,
+        id: "remove",
+      },
+      {
+        label: "$(settings-gear) Open Remote Command Settings",
+        description: "edit JSON settings directly",
+        id: "settings",
+      },
+    ] satisfies Array<vscode.QuickPickItem & { id: string }>,
+    {
+      title: "AutoDL Remote Commands",
+      placeHolder: "Configure reusable commands",
+      ignoreFocusOut: true,
+    },
+  );
+  if (!picked) {
+    return;
+  }
+  if (picked.id === "addCommand") {
+    const entry = await promptRemoteCommandEntry();
+    if (entry) {
+      await saveRemoteCommandWithPrompt(entry);
+    }
+    return;
+  }
+  if (picked.id === "addScript") {
+    const entry = await promptLocalScriptEntry();
+    if (entry) {
+      await saveRemoteCommandWithPrompt(entry);
+    }
+    return;
+  }
+  if (picked.id === "remove") {
+    await removeSavedRemoteCommand();
+    return;
+  }
+  await vscode.commands.executeCommand("workbench.action.openSettings", "autodl.remoteCommands");
+}
+
+async function runRemoteCommand(
+  context: vscode.ExtensionContext,
+  item?: InstanceItem,
+): Promise<void> {
+  await runSafely(async () => {
+    const client = await createClient(context);
+    if (!client) {
+      return;
+    }
+    const instance = await resolveInstance(client, item);
+    if (!instance) {
+      return;
+    }
+    const entry = await pickRemoteCommandForRun();
+    if (!entry) {
+      return;
+    }
+    const uuid = mustInstanceUuid(instance);
+    const settings = getSettings();
+    const snapshot = await snapshotWithRetry(client, uuid, 3);
+    const alias = await writeManagedSshHost(uuid, snapshot, managedSshHostOptions(settings));
+    await executeRemoteCommand(alias, entry, settings);
+  });
+}
+
+async function pickRemoteCommandForRun(): Promise<RemoteCommandConfig | undefined> {
+  const savedCommands = getSettings().remoteCommands.commands;
+  type CommandPick = vscode.QuickPickItem & {
+    action?: "input" | "script" | "saved";
+    command?: RemoteCommandConfig;
+  };
+  const items: CommandPick[] = [
+    {
+      label: "$(terminal) Enter Remote Command...",
+      description: "run once or save",
+      action: "input",
+    },
+    {
+      label: "$(file-code) Select Local .sh Script...",
+      description: "upload, chmod +x, run once or save",
+      action: "script",
+    },
+  ];
+  if (savedCommands.length) {
+    items.push({ label: "Saved Commands", kind: vscode.QuickPickItemKind.Separator });
+    items.push(
+      ...savedCommands.map((command) => ({
+        label: command.name,
+        description: command.type === "localScript" ? "script" : "command",
+        detail: command.type === "localScript" ? command.localPath : command.command,
+        action: "saved" as const,
+        command,
+      })),
+    );
+  }
+
+  const picked = await vscode.window.showQuickPick(items, {
+    title: "AutoDL Run Remote Command",
+    placeHolder: "Enter a command, choose a local .sh, or run a saved command",
+    ignoreFocusOut: true,
+  });
+  if (!picked || picked.kind === vscode.QuickPickItemKind.Separator) {
+    return undefined;
+  }
+  if (picked.action === "saved") {
+    return picked.command;
+  }
+  const entry =
+    picked.action === "script" ? await promptLocalScriptEntry() : await promptRemoteCommandEntry();
+  if (!entry) {
+    return undefined;
+  }
+  await maybeSaveRemoteCommand(entry);
+  return entry;
+}
+
+async function promptRemoteCommandEntry(): Promise<RemoteCommandConfig | undefined> {
+  const settings = getSettings();
+  const command = await vscode.window.showInputBox({
+    title: "AutoDL Remote Command",
+    prompt: "Shell command executed on the selected AutoDL instance.",
+    ignoreFocusOut: true,
+    validateInput: (value) => (value.trim() ? undefined : "Command cannot be empty."),
+  });
+  if (!command) {
+    return undefined;
+  }
+  return {
+    name: guessRemoteCommandName(command),
+    type: "command",
+    command: command.trim(),
+    cwd: settings.remoteCommands.defaultCwd || "/root",
+  };
+}
+
+async function promptLocalScriptEntry(): Promise<RemoteCommandConfig | undefined> {
+  const settings = getSettings();
+  const selected = await vscode.window.showOpenDialog({
+    title: "AutoDL Local .sh Script",
+    canSelectFiles: true,
+    canSelectFolders: false,
+    canSelectMany: false,
+    filters: {
+      "Shell scripts": ["sh"],
+      "All files": ["*"],
+    },
+    openLabel: "Use Script",
+  });
+  const localPath = selected?.[0]?.fsPath;
+  if (!localPath) {
+    return undefined;
+  }
+  return {
+    name: path.basename(localPath, path.extname(localPath)) || path.basename(localPath),
+    type: "localScript",
+    localPath,
+    remotePath: defaultRemoteScriptPath(localPath, settings),
+    cwd: settings.remoteCommands.defaultCwd || "/root",
+  };
+}
+
+async function maybeSaveRemoteCommand(entry: RemoteCommandConfig): Promise<void> {
+  const choice = await vscode.window.showInformationMessage(
+    `Save "${entry.name}" for reuse?`,
+    "Save",
+    "Run Once",
+  );
+  if (choice === "Save") {
+    await saveRemoteCommandWithPrompt(entry);
+  }
+}
+
+async function saveRemoteCommandWithPrompt(entry: RemoteCommandConfig): Promise<boolean> {
+  const name = await inputValue("Remote command name", entry.name || "AutoDL command");
+  if (!name) {
+    return false;
+  }
+  const finalEntry = { ...entry, name: name.trim() };
+  const settings = getSettings();
+  const existingIndex = settings.remoteCommands.commands.findIndex(
+    (command) => command.name.toLowerCase() === finalEntry.name.toLowerCase(),
+  );
+  const nextCommands = [...settings.remoteCommands.commands];
+  if (existingIndex >= 0) {
+    const choice = await vscode.window.showWarningMessage(
+      `Remote command "${finalEntry.name}" already exists.`,
+      "Overwrite",
+      "Cancel",
+    );
+    if (choice !== "Overwrite") {
+      return false;
+    }
+    nextCommands[existingIndex] = finalEntry;
+  } else {
+    nextCommands.push(finalEntry);
+  }
+  await vscode.workspace
+    .getConfiguration("autodl")
+    .update("remoteCommands.commands", nextCommands, vscode.ConfigurationTarget.Global);
+  void vscode.window.showInformationMessage(`AutoDL remote command saved: ${finalEntry.name}`);
+  return true;
+}
+
+async function removeSavedRemoteCommand(): Promise<void> {
+  const commands = getSettings().remoteCommands.commands;
+  if (!commands.length) {
+    void vscode.window.showInformationMessage("No saved AutoDL remote commands.");
+    return;
+  }
+  const picked = await vscode.window.showQuickPick(
+    commands.map((command) => ({
+      label: command.name,
+      description: command.type === "localScript" ? "script" : "command",
+      detail: command.type === "localScript" ? command.localPath : command.command,
+      command,
+    })),
+    {
+      title: "Remove AutoDL Remote Command",
+      placeHolder: "Choose a saved command to remove",
+      ignoreFocusOut: true,
+    },
+  );
+  if (!picked) {
+    return;
+  }
+  const nextCommands = commands.filter((command) => command.name !== picked.command.name);
+  await vscode.workspace
+    .getConfiguration("autodl")
+    .update("remoteCommands.commands", nextCommands, vscode.ConfigurationTarget.Global);
+  void vscode.window.showInformationMessage(`AutoDL remote command removed: ${picked.command.name}`);
+}
+
+async function executeRemoteCommand(
+  alias: string,
+  entry: RemoteCommandConfig,
+  settings: ReturnType<typeof getSettings>,
+): Promise<void> {
+  const timeoutMs = remoteCommandTimeoutMs(entry, settings);
+  output.show(true);
+  output.appendLine("");
+  output.appendLine(`Running AutoDL remote command on ${alias}: ${entry.name}`);
+  const result = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `AutoDL: running ${entry.name}`,
+      cancellable: false,
+    },
+    async () => {
+      if (entry.type === "localScript") {
+        return executeRemoteScript(alias, entry, settings, timeoutMs);
+      }
+      return executeRemoteShellCommand(alias, entry, settings, timeoutMs);
+    },
+  );
+  appendCommandOutput("stdout", result.stdout);
+  appendCommandOutput("stderr", result.stderr);
+  void vscode.window.showInformationMessage(`AutoDL remote command finished: ${entry.name}`);
+}
+
+async function executeRemoteShellCommand(
+  alias: string,
+  entry: RemoteCommandConfig,
+  settings: ReturnType<typeof getSettings>,
+  timeoutMs: number,
+): Promise<{ stdout: string; stderr: string }> {
+  const command = entry.command?.trim();
+  if (!command) {
+    throw new Error(`Remote command "${entry.name}" is empty.`);
+  }
+  const cwd = normalizeRemotePath(entry.cwd || settings.remoteCommands.defaultCwd || "/root");
+  const remoteCommand = [`cd ${remoteShellQuote(cwd)}`, command].join("\n");
+  return runManagedSshCommand(alias, remoteCommand, timeoutMs);
+}
+
+async function executeRemoteScript(
+  alias: string,
+  entry: RemoteCommandConfig,
+  settings: ReturnType<typeof getSettings>,
+  timeoutMs: number,
+): Promise<{ stdout: string; stderr: string }> {
+  const localPath = entry.localPath?.trim();
+  if (!localPath) {
+    throw new Error(`Remote script "${entry.name}" does not have a localPath.`);
+  }
+  const content = await fs.readFile(localPath, "utf8");
+  const remotePath = normalizeRemotePath(
+    entry.remotePath || defaultRemoteScriptPath(localPath, settings),
+  );
+  const remoteDirectory = path.posix.dirname(remotePath);
+  const cwd = normalizeRemotePath(entry.cwd || settings.remoteCommands.defaultCwd || "/root");
+  const command = [
+    "set -eu",
+    `mkdir -p ${remoteShellQuote(remoteDirectory)}`,
+    `cat > ${remoteShellQuote(remotePath)}`,
+    `chmod +x ${remoteShellQuote(remotePath)}`,
+    `cd ${remoteShellQuote(cwd)}`,
+    `if head -n 1 ${remoteShellQuote(remotePath)} | grep -q '^#!'; then ${remoteShellQuote(remotePath)}; elif command -v bash >/dev/null 2>&1; then bash ${remoteShellQuote(remotePath)}; else sh ${remoteShellQuote(remotePath)}; fi`,
+  ].join("\n");
+  output.appendLine(`Uploading script: ${localPath} -> ${alias}:${remotePath}`);
+  return runManagedSshCommand(alias, command, timeoutMs, content);
+}
+
+function appendCommandOutput(label: string, value: string): void {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return;
+  }
+  output.appendLine(`${label}:`);
+  for (const line of trimmed.split(/\r?\n/)) {
+    output.appendLine(`  ${line}`);
+  }
+}
+
+function defaultRemoteScriptPath(
+  localPath: string,
+  settings: ReturnType<typeof getSettings>,
+): string {
+  const directory = normalizeRemotePath(
+    settings.remoteCommands.defaultRemoteDirectory || "/root/autodl-scripts",
+  ).replace(/\/+$/, "");
+  const fileName = sanitizeRemoteFileName(path.basename(localPath) || "autodl-command.sh");
+  return `${directory}/${fileName}`;
+}
+
+function sanitizeRemoteFileName(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]/g, "_") || "autodl-command.sh";
+}
+
+function guessRemoteCommandName(command: string): string {
+  const compact = command.replace(/\s+/g, " ").trim();
+  return compact.length > 40 ? `${compact.slice(0, 37)}...` : compact || "AutoDL command";
+}
+
+function remoteCommandTimeoutMs(
+  entry: RemoteCommandConfig,
+  settings: ReturnType<typeof getSettings>,
+): number {
+  const seconds = entry.timeoutSeconds || settings.remoteCommands.defaultTimeoutMs / 1000 || 3600;
+  const parsed = Number(seconds);
+  return (Number.isFinite(parsed) ? Math.max(1, parsed) : 3600) * 1000;
+}
+
+function remoteShellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\"'\"'")}'`;
+}
+
+async function openAutoDLSettings(): Promise<void> {
+  await vscode.commands.executeCommand(
+    "workbench.action.openSettings",
+    "@ext:happyan.autodl-vscode",
+  );
 }
 
 async function installRemoteCodexForAlias(
@@ -986,10 +1522,6 @@ async function reloadRemoteWindowAfterCodexInstall(
   alias: string,
   settings: ReturnType<typeof getSettings>,
 ): Promise<void> {
-  if (!settings.remoteCodex.autoReloadRemoteWindow) {
-    output.appendLine("Remote window auto reload is disabled.");
-    return;
-  }
   const remoteUri = remoteSshUri(alias, settings.openRemotePath);
   const targetAuthority = remoteUri.authority.toLowerCase();
   const currentWindowIsTarget = (vscode.workspace.workspaceFolders || []).some(
@@ -997,6 +1529,18 @@ async function reloadRemoteWindowAfterCodexInstall(
       folder.uri.scheme === "vscode-remote" &&
       folder.uri.authority.toLowerCase() === targetAuthority,
   );
+
+  if (!settings.remoteCodex.autoReloadRemoteWindow) {
+    output.appendLine("Remote window auto reload is disabled.");
+    const action = currentWindowIsTarget ? "Reload Remote Window" : "Open Remote Window";
+    const choice = await vscode.window.showInformationMessage(
+      `AutoDL remote Codex extension installed on ${alias}. Reload the Remote SSH window to enable it.`,
+      action,
+    );
+    if (choice !== action) {
+      return;
+    }
+  }
 
   if (currentWindowIsTarget) {
     output.appendLine(`Reloading current Remote SSH window: ${remoteUri.toString()}`);
@@ -1035,7 +1579,7 @@ async function toggleRemoteProxyForAlias(
 ): Promise<"enabled" | "disabled"> {
   const proxy = resolveRemoteProxy(settings.remoteProxy);
   if (!proxy) {
-    throw new Error("AutoDL remote proxy forwarding is disabled.");
+    throw new Error("AutoDL remote proxy forwarding is not configured.");
   }
   const remoteSettings = remoteProxySettingsPayload(proxy);
   const result = await toggleRemoteVsCodeSettings(alias, remoteSettings);
@@ -1510,7 +2054,7 @@ function reportErrorToOutput(error: unknown): string {
     }
     if (error.code === "NetworkError") {
       output.appendLine(
-        "Hint: this is a network/TLS failure before AutoDL returned a response. Check VPN/proxy, VS Code http.proxy settings, DNS, firewall, and autodl.apiBaseUrl.",
+        "Hint: this is a network/TLS failure before AutoDL returned a response. Check local VPN/proxy, DNS, firewall, and autodl.apiBaseUrl.",
       );
     }
   }

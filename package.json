@@ -2,7 +2,7 @@
   "name": "autodl-vscode",
   "displayName": "AutoDL Control",
   "description": "Quickly create, connect, stop, and release AutoDL Pro instances from VS Code.",
-  "version": "0.2.19",
+  "version": "0.2.20",
   "publisher": "happyan",
   "license": "MIT",
   "icon": "media/autodl-icon.png",
@@ -41,9 +41,13 @@
     "onCommand:autodl.selectServer",
     "onCommand:autodl.setSshPublicKey",
     "onCommand:autodl.prepareRemote",
+    "onCommand:autodl.configureProxy",
     "onCommand:autodl.writeRemoteProxySettings",
     "onCommand:autodl.installRemoteCodex",
     "onCommand:autodl.toggleRemoteCodexAutoInstall",
+    "onCommand:autodl.configureRemoteCommands",
+    "onCommand:autodl.runRemoteCommand",
+    "onCommand:autodl.openSettings",
     "onCommand:autodl.setSyncFolders",
     "onCommand:autodl.startFolderSync",
     "onCommand:autodl.uploadSyncFolder",
@@ -109,8 +113,13 @@
       },
       {
         "command": "autodl.prepareRemote",
-        "title": "AutoDL: Prepare Remote Proxy and Codex",
+        "title": "AutoDL: Remote Tools",
         "icon": "$(tools)"
+      },
+      {
+        "command": "autodl.configureProxy",
+        "title": "AutoDL: Configure Remote Proxy",
+        "icon": "$(plug)"
       },
       {
         "command": "autodl.writeRemoteProxySettings",
@@ -126,6 +135,21 @@
         "command": "autodl.toggleRemoteCodexAutoInstall",
         "title": "AutoDL: Toggle Remote Codex Auto Install",
         "icon": "$(robot)"
+      },
+      {
+        "command": "autodl.configureRemoteCommands",
+        "title": "AutoDL: Configure Remote Commands",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "autodl.runRemoteCommand",
+        "title": "AutoDL: Run Remote Command",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "autodl.openSettings",
+        "title": "AutoDL: Open Settings",
+        "icon": "$(settings-gear)"
       },
       {
         "command": "autodl.setSyncFolders",
@@ -237,7 +261,7 @@
           "group": "inline@2"
         },
         {
-          "command": "autodl.uploadSyncFolder",
+          "command": "autodl.runRemoteCommand",
           "when": "view == autodlInstances && viewItem == autodlInstanceRunning",
           "group": "inline@3"
         },
@@ -270,6 +294,16 @@
           "command": "autodl.installRemoteCodex",
           "when": "view == autodlInstances && viewItem == autodlInstanceRunning",
           "group": "actions@5"
+        },
+        {
+          "command": "autodl.uploadSyncFolder",
+          "when": "view == autodlInstances && viewItem == autodlInstanceRunning",
+          "group": "actions@6"
+        },
+        {
+          "command": "autodl.runRemoteCommand",
+          "when": "view == autodlInstances && viewItem == autodlInstanceRunning",
+          "group": "actions@7"
         }
       ],
       "commandPalette": [
@@ -283,6 +317,9 @@
           "command": "autodl.prepareRemote"
         },
         {
+          "command": "autodl.configureProxy"
+        },
+        {
           "command": "autodl.writeRemoteProxySettings"
         },
         {
@@ -290,6 +327,15 @@
         },
         {
           "command": "autodl.toggleRemoteCodexAutoInstall"
+        },
+        {
+          "command": "autodl.configureRemoteCommands"
+        },
+        {
+          "command": "autodl.runRemoteCommand"
+        },
+        {
+          "command": "autodl.openSettings"
         },
         {
           "command": "autodl.setSyncFolders"
@@ -346,8 +392,13 @@
         },
         "autodl.remoteProxy.proxyUrl": {
           "type": "string",
-          "default": "http://127.0.0.1:7890",
-          "description": "Local proxy URL forwarded to AutoDL instances. http, https, socks, socks4, and socks5 URLs are supported."
+          "default": "",
+          "description": "Local proxy URL forwarded to AutoDL instances. Leave empty to disable AutoDL proxy forwarding. http, https, socks, socks4, and socks5 URLs are supported."
+        },
+        "autodl.remoteProxy.localForwardHost": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Local host written to the SSH RemoteForward target, for example RemoteForward <remotePort> <localForwardHost>:<localPort>."
         },
         "autodl.remoteProxy.remoteForwardPort": {
           "type": "number",
@@ -361,8 +412,8 @@
         },
         "autodl.remoteCodex.autoReloadRemoteWindow": {
           "type": "boolean",
-          "default": true,
-          "description": "Automatically reload the current matching Remote SSH window, or open the remote folder in a new window, after installing the configured Codex VS Code extension."
+          "default": false,
+          "description": "Automatically reload the current matching Remote SSH window, or open the remote folder in a new window, after installing the configured Codex VS Code extension. Disabled by default to avoid Remote SSH reload stalls."
         },
         "autodl.remoteCodex.extensionId": {
           "type": "string",
@@ -378,6 +429,67 @@
           "type": "number",
           "default": 600,
           "description": "Timeout for installing the Codex VS Code extension on the remote."
+        },
+        "autodl.remoteCommands.commands": {
+          "type": "array",
+          "default": [],
+          "description": "Reusable remote commands shown in AutoDL: Run Remote Command.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "type"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Display name in the remote command picker."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "command",
+                  "localScript"
+                ],
+                "description": "Run an inline shell command or upload and run a local .sh file."
+              },
+              "command": {
+                "type": "string",
+                "description": "Shell command executed on the remote when type is command."
+              },
+              "localPath": {
+                "type": "string",
+                "description": "Local .sh file uploaded before execution when type is localScript."
+              },
+              "remotePath": {
+                "type": "string",
+                "description": "Remote script path used for uploaded localScript entries."
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Remote working directory before running the command or script."
+              },
+              "timeoutSeconds": {
+                "type": "number",
+                "description": "Optional timeout for this command. Uses autodl.remoteCommands.defaultTimeoutSeconds when omitted."
+              }
+            }
+          }
+        },
+        "autodl.remoteCommands.defaultRemoteDirectory": {
+          "type": "string",
+          "default": "/root/autodl-scripts",
+          "description": "Remote directory used when uploading ad-hoc local .sh scripts."
+        },
+        "autodl.remoteCommands.defaultCwd": {
+          "type": "string",
+          "default": "/root",
+          "description": "Default remote working directory for ad-hoc and saved remote commands."
+        },
+        "autodl.remoteCommands.defaultTimeoutSeconds": {
+          "type": "number",
+          "default": 3600,
+          "description": "Default timeout for remote command and script execution."
         },
         "autodl.sync.localFolder": {
           "type": "string",
